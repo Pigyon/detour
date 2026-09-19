@@ -25,9 +25,10 @@ func NewRoot() *cobra.Command {
 	v := config.NewViper()
 
 	root := &cobra.Command{
-		Use:   "detour",
-		Short: "Open redirect discovery and verification engine",
-		Long:  "detour reconstructs where a navigation destination is hiding, how it is validated, and how a browser resolves it.",
+		Use:     "detour",
+		Short:   "Open redirect discovery and verification engine",
+		Long:    "detour reconstructs where a navigation destination is hiding, how it is validated, and how a browser resolves it.",
+		Version: version,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			if err := bindFlags(v, cmd); err != nil {
 				return err
@@ -61,6 +62,7 @@ func NewRoot() *cobra.Command {
 	registerPersistentFlags(root)
 	root.AddCommand(newVersionCmd())
 	root.AddCommand(newScopeCmd())
+	root.AddCommand(newLabCmd())
 
 	return root
 }

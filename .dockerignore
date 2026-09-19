@@ -1,0 +1,6 @@
+.git
+.cursor
+bin
+dist
+out
+*.md
