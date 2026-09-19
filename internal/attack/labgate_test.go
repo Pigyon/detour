@@ -10,7 +10,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var recallIDs = []string{"OR-A01", "OR-A03", "OR-A07", "OR-A11", "OR-D01"}
+// recallIDs are the techniques the server-side engine can reach today. The
+// chained-redirector case (OR-B05) needs hop following and is not here yet.
+var recallIDs = []string{
+	"OR-A01", "OR-A03", "OR-A07", "OR-A11", "OR-D01",
+	"OR-B01", "OR-B02", "OR-B03", "OR-B04",
+}
 
 func TestLabZeroFalsePositives(t *testing.T) {
 	t.Parallel()
@@ -50,7 +55,7 @@ func TestLabRecall(t *testing.T) {
 			continue
 		}
 
-		urls = append(urls, srv.URL+catalogProbe(ep))
+		urls = append(urls, recallProbe(t, srv.URL, ep))
 	}
 
 	findings, err := eng.Run(context.Background(), urls)
@@ -66,6 +71,24 @@ func TestLabRecall(t *testing.T) {
 	for id := range want {
 		_, ok := got[id]
 		assert.True(t, ok, "missing recall for %s", id)
+	}
+}
+
+// recallProbe builds a usable probe URL for an endpoint. The opaque
+// destination endpoints only reveal anything when handed a valid envelope, so
+// those are built with the lab's own encoders rather than a placeholder.
+func recallProbe(t *testing.T, base string, ep lab.Endpoint) string {
+	t.Helper()
+
+	switch ep.ID {
+	case "OR-B01":
+		return clickProbe(t, base)
+	case "OR-B02":
+		return upnProbe(t, base)
+	case "OR-B03":
+		return jwtProbe(t, base)
+	default:
+		return base + catalogProbe(ep)
 	}
 }
 

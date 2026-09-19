@@ -22,12 +22,38 @@ import (
 const (
 	mechHeader = "header"
 	mechCRLF   = "crlf"
+	mechBlob   = "blob"
+	mechQuery  = "query"
 )
 
 var redirectParams = []string{
 	"url", "next", "redirect", "redirect_uri", "return", "returnurl", "return_to",
 	"back", "backurl", "dest", "destination", "goto", "continue", "rurl", "redir",
 	"uri", "target", "to", "out", "forward", "link", "callback", "relaystate",
+}
+
+// probe is one attack attempt: the request to send, the independent
+// second-canary request that proves input control, and where it came from.
+type probe struct {
+	source    string
+	probed    string
+	altProbed string
+	expanded  string
+	payload   payload.Payload
+	param     string
+	extra     http.Header
+	altExtra  http.Header
+	// blob is set when the destination lives inside an opaque envelope.
+	blob *blobContext
+}
+
+// blobContext carries what the decoder learned, so a blob finding names the
+// envelope class and the exact field that moved.
+type blobContext struct {
+	technique string
+	chain     []model.Decoder
+	fields    []model.FieldPath
+	field     model.FieldPath
 }
 
 // Engine probes candidates with the built-in payload set.
@@ -119,7 +145,11 @@ func (e *Engine) attackOne(ctx context.Context, raw string) ([]model.Finding, er
 		return nil, fmt.Errorf("parsing source: %w", err)
 	}
 
-	hits := []model.Finding{}
+	hits, err := e.attackBlobs(ctx, raw)
+	if err != nil {
+		return nil, err
+	}
+
 	seen := map[string]struct{}{}
 
 	for _, p := range e.payloads {
@@ -163,7 +193,13 @@ func (e *Engine) attackKeyword(ctx context.Context, raw string) ([]model.Finding
 		probed := payload.Substitute(raw, e.keyword, expanded)
 		altProbed := payload.Substitute(raw, e.keyword, altExpanded)
 
-		f, ok, err := e.confirm(ctx, raw, probed, altProbed, expanded, p, "", nil, nil)
+		f, ok, err := e.confirm(ctx, probe{
+			source:    raw,
+			probed:    probed,
+			altProbed: altProbed,
+			expanded:  expanded,
+			payload:   p,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -206,17 +242,14 @@ func (e *Engine) attackParams(ctx context.Context, parsed *url.URL, p payload.Pa
 		altQ.Set(actual, altExpanded)
 		altNext.RawQuery = altQ.Encode()
 
-		f, ok, err := e.confirm(
-			ctx,
-			parsed.String(),
-			next.String(),
-			altNext.String(),
-			expanded,
-			p,
-			actual,
-			nil,
-			nil,
-		)
+		f, ok, err := e.confirm(ctx, probe{
+			source:    parsed.String(),
+			probed:    next.String(),
+			altProbed: altNext.String(),
+			expanded:  expanded,
+			payload:   p,
+			param:     actual,
+		})
 		if err != nil || !ok {
 			continue
 		}
@@ -238,7 +271,15 @@ func (e *Engine) probeHeader(ctx context.Context, raw string, p payload.Payload)
 	altHeaders.Set("X-Forwarded-Host", altExpanded)
 	altHeaders.Set("X-Host", altExpanded)
 
-	return e.confirm(ctx, raw, raw, raw, expanded, p, "", headers, altHeaders)
+	return e.confirm(ctx, probe{
+		source:    raw,
+		probed:    raw,
+		altProbed: raw,
+		expanded:  expanded,
+		payload:   p,
+		extra:     headers,
+		altExtra:  altHeaders,
+	})
 }
 
 func (e *Engine) probeCRLF(ctx context.Context, raw string, p payload.Payload) (model.Finding, bool, error) {
@@ -247,28 +288,30 @@ func (e *Engine) probeCRLF(ctx context.Context, raw string, p payload.Payload) (
 	probed := joinPath(raw, expanded)
 	altProbed := joinPath(raw, altExpanded)
 
-	return e.confirm(ctx, raw, probed, altProbed, expanded, p, "", nil, nil)
+	return e.confirm(ctx, probe{
+		source:    raw,
+		probed:    probed,
+		altProbed: altProbed,
+		expanded:  expanded,
+		payload:   p,
+	})
 }
 
-func (e *Engine) confirm(
-	ctx context.Context,
-	source, probed, altProbed, expanded string,
-	p payload.Payload,
-	param string,
-	extra, altExtra http.Header,
-) (model.Finding, bool, error) {
-	if e.checkpoint != nil && e.checkpoint.Seen(source, expanded, p.Technique) {
+func (e *Engine) confirm(ctx context.Context, pr probe) (model.Finding, bool, error) {
+	technique := pr.techniqueID()
+
+	if e.checkpoint != nil && e.checkpoint.Seen(pr.source, pr.expanded, technique) {
 		return model.Finding{}, false, nil
 	}
 
-	pair, dest, status, err := e.readDest(ctx, probed, extra, e.canary)
+	pair, dest, status, err := e.readDest(ctx, pr.probed, pr.extra, e.canary)
 	if err != nil {
 		return model.Finding{}, false, err
 	}
 
 	hit := dest != "" && resolve.HitsCanary(pair, e.canary)
 	if hit {
-		altPair, _, _, err := e.readDest(ctx, altProbed, altExtra, AltCanary(e.canary))
+		altPair, _, _, err := e.readDest(ctx, pr.altProbed, pr.altExtra, AltCanary(e.canary))
 		if err != nil {
 			return model.Finding{}, false, err
 		}
@@ -276,7 +319,7 @@ func (e *Engine) confirm(
 		hit = resolve.HitsCanary(altPair, AltCanary(e.canary))
 	}
 
-	if err := e.checkpoint.RecordAttempt(source, expanded, p.Technique, hit); err != nil {
+	if err := e.checkpoint.RecordAttempt(pr.source, pr.expanded, technique, hit); err != nil {
 		return model.Finding{}, false, err
 	}
 
@@ -284,7 +327,26 @@ func (e *Engine) confirm(
 		return model.Finding{}, false, nil
 	}
 
-	return e.finding(source, probed, expanded, param, p, pair, dest, status), true, nil
+	return e.finding(pr, pair, dest, status), true, nil
+}
+
+// techniqueID prefers the envelope class the decoder identified over the
+// payload's own id: a blob finding is an OR-B case whatever string got it in.
+func (pr probe) techniqueID() string {
+	if pr.blob != nil {
+		return pr.blob.technique
+	}
+
+	return pr.payload.Technique
+}
+
+// mechanism reports how the destination was carried.
+func (pr probe) mechanism() string {
+	if pr.blob != nil {
+		return mechBlob
+	}
+
+	return pr.payload.Mechanism
 }
 
 func (e *Engine) readDest(ctx context.Context, raw string, extra http.Header, canary string) (resolve.Pair, string, int, error) {
@@ -350,36 +412,26 @@ func pickCanaryDest(base string, dests []string, canary string) (resolve.Pair, s
 	return resolve.Pair{}, "", false
 }
 
-func (e *Engine) finding(
-	source, probed, expanded, param string,
-	p payload.Payload,
-	pair resolve.Pair,
-	dest string,
-	status int,
-) model.Finding {
-	rep := model.RepresentationQueryParameter
+func (e *Engine) finding(pr probe, pair resolve.Pair, dest string, status int) model.Finding {
+	cand := model.NewNavigationCandidate(pr.source, pr.representation())
+	cand.ParamName = pr.param
 
-	switch {
-	case extraIsHeader(p.Mechanism):
-		rep = model.RepresentationHeader
-	case p.Mechanism == mechCRLF:
-		rep = model.RepresentationPathSegment
+	if pr.blob != nil {
+		cand.DecoderChain = pr.blob.chain
+		cand.URLFields = pr.blob.fields
 	}
 
-	cand := model.NewNavigationCandidate(source, rep)
-	cand.ParamName = param
-
 	f := model.NewFinding()
-	f.TechniqueID = p.Technique
-	f.Mechanism = p.Mechanism
-	f.Payload = expanded
+	f.TechniqueID = pr.techniqueID()
+	f.Mechanism = pr.mechanism()
+	f.Payload = pr.expanded
 	f.Candidate = cand
 	f.Capabilities.RedirectExternal = true
 	f.Capabilities.InputControlled = true
 	f.Capabilities.HopCount = 0
 	f.Verdict = model.VerdictConfirmed
 
-	if resolve.NeedsBrowserConfirm(source, e.canary, pair) {
+	if resolve.NeedsBrowserConfirm(pr.source, e.canary, pair) {
 		f.Verdict = model.VerdictCandidate
 	}
 
@@ -390,13 +442,28 @@ func (e *Engine) finding(
 		"rfc_host=" + pair.RFC.Host,
 		"browser_host=" + pair.Browser.Host,
 	}
-	f.Repro = "curl -sI " + probed
+
+	if pr.blob != nil {
+		f.Evidence = append(f.Evidence, "blob_field="+string(pr.blob.field))
+	}
+
+	f.Repro = "curl -sI " + pr.probed
 
 	return f
 }
 
-func extraIsHeader(mechanism string) bool {
-	return mechanism == mechHeader
+// representation names how the candidate carried the destination.
+func (pr probe) representation() model.Representation {
+	switch pr.mechanism() {
+	case mechHeader:
+		return model.RepresentationHeader
+	case mechCRLF:
+		return model.RepresentationPathSegment
+	case mechBlob:
+		return model.RepresentationOpaqueBlob
+	default:
+		return model.RepresentationQueryParameter
+	}
 }
 
 func joinPath(raw, suffix string) string {

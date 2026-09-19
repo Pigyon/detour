@@ -19,6 +19,7 @@ const (
 
 	techA03 = "OR-A03"
 	techA07 = "OR-A07"
+	techB04 = "OR-B04"
 )
 
 // Payload is one technique-tagged template.
@@ -83,6 +84,8 @@ var builtIn = []Payload{
 	{Technique: "OR-E01", Mechanism: mechQuery, Template: "javascript:" + tokenCanary},
 	{Technique: "OR-E02", Mechanism: mechQuery, Template: "data:text/html," + tokenCanary},
 	{Technique: "OR-E03", Mechanism: mechQuery, Template: "http://" + tokenTarget + "/"},
+	{Technique: techB04, Mechanism: mechQuery, Template: "https%3A%2F%2F" + tokenCanary},
+	{Technique: techB04, Mechanism: mechQuery, Template: "%2F%2F" + tokenCanary},
 	{Technique: "OR-A11", Mechanism: mechCRLF, Template: "/%0d%0aLocation:%20https://" + tokenCanary},
 	{Technique: "OR-D01", Mechanism: mechHeader, Template: tokenCanary},
 }
