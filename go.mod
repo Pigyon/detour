@@ -3,6 +3,7 @@ module github.com/nedlir/detour
 go 1.23.0
 
 require (
+	github.com/andybalholm/brotli v1.2.4
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.12.1

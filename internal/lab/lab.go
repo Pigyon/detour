@@ -29,7 +29,10 @@ const (
 	clickHost     = "trace.lab"
 	clickCampaign = 106519
 	maxBlobBytes  = 1 << 20
-	shutdownWait  = 5 * time.Second
+
+	// labJWTSignature stands in for a signature the OR-B03 endpoint never checks.
+	labJWTSignature = "ZGV0b3VyLWxhYi1zaWduYXR1cmU"
+	shutdownWait    = 5 * time.Second
 )
 
 // Lab is a vulnerable fixture server. Tests use Handler via httptest;

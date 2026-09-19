@@ -306,3 +306,40 @@ func handleChainInner(w http.ResponseWriter, r *http.Request) {
 		return raw != ""
 	})
 }
+
+// EncodeUPN builds a valid unsigned ESP click wrapper for dest, the shape the
+// OR-B02 endpoint accepts.
+func EncodeUPN(dest string) (string, error) {
+	raw, err := json.Marshal(map[string]any{
+		"url":      dest,
+		"mid":      "0000000000000",
+		"campaign": clickCampaign,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshaling upn wrapper: %w", err)
+	}
+
+	return base64.URLEncoding.EncodeToString(raw), nil
+}
+
+// EncodeJWT builds an unverified token whose redirect claim is dest, the shape
+// the OR-B03 endpoint accepts.
+func EncodeJWT(dest string) (string, error) {
+	header, err := json.Marshal(map[string]any{"alg": "HS256", "typ": "JWT"})
+	if err != nil {
+		return "", fmt.Errorf("marshaling jwt header: %w", err)
+	}
+
+	claims, err := json.Marshal(map[string]any{
+		"redirect": dest,
+		"iss":      clickHost,
+		"sub":      "lab",
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshaling jwt claims: %w", err)
+	}
+
+	enc := base64.RawURLEncoding
+
+	return enc.EncodeToString(header) + "." + enc.EncodeToString(claims) + "." + labJWTSignature, nil
+}
