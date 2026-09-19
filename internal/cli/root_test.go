@@ -36,4 +36,6 @@ func TestRootHelp(t *testing.T) {
 	require.NoError(t, cmd.Execute())
 	assert.Contains(t, buf.String(), "detour")
 	assert.Contains(t, buf.String(), "version")
+	assert.Contains(t, buf.String(), "--canary")
+	assert.Contains(t, buf.String(), "--scope-file")
 }

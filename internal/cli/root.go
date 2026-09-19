@@ -3,31 +3,26 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"strings"
+	"time"
 
+	"github.com/nedlir/detour/internal/config"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
 
-const envPrefix = "DETOUR"
-
 // Execute runs the detour command tree under ctx.
 func Execute(ctx context.Context) error {
-	cmd := NewRoot()
-	cmd.SetContext(ctx)
-
-	return cmd.Execute()
+	return NewRoot().ExecuteContext(ctx)
 }
 
 // NewRoot builds a fresh command tree. Tests must call this per case so flag
 // state never leaks across Execute calls.
 func NewRoot() *cobra.Command {
-	v := viper.New()
+	v := config.NewViper()
 
 	root := &cobra.Command{
 		Use:   "detour",
@@ -38,11 +33,24 @@ func NewRoot() *cobra.Command {
 				return err
 			}
 
-			if err := loadConfig(v, cmd); err != nil {
+			cfgFile, err := cmd.Flags().GetString("config")
+			if err != nil {
+				return fmt.Errorf("reading config flag: %w", err)
+			}
+
+			if err := config.LoadFile(v, cfgFile); err != nil {
 				return err
 			}
 
-			setupLogger(v, cmd.ErrOrStderr())
+			cfg, err := config.Unmarshal(v)
+			if err != nil {
+				return err
+			}
+
+			setupLogger(cfg.LogLevel, cmd.ErrOrStderr())
+			ctx := config.WithConfig(cmd.Context(), cfg)
+			cmd.SetContext(ctx)
+			cmd.Root().SetContext(ctx)
 
 			return nil
 		},
@@ -50,12 +58,26 @@ func NewRoot() *cobra.Command {
 		SilenceErrors: true,
 	}
 
-	root.PersistentFlags().String("config", "", "config file (default $HOME/.detour.yaml)")
-	root.PersistentFlags().String("log-level", "info", "log level (debug, info, warn, error)")
-
+	registerPersistentFlags(root)
 	root.AddCommand(newVersionCmd())
 
 	return root
+}
+
+func registerPersistentFlags(root *cobra.Command) {
+	fs := root.PersistentFlags()
+	fs.String("config", "", "config file (default $HOME/.detour.yaml)")
+	fs.String("log-level", "info", "log level (debug, info, warn, error)")
+	fs.String("scope-file", "", "bug bounty scope list; hard boundary on every request")
+	fs.String("canary", config.DefaultCanary, "canary host (RFC 6761 .invalid, never contacted)")
+	fs.StringArray("header", []string{}, "extra request header (repeatable); in-scope hosts only")
+	fs.String("cookie", "", "inline session cookies; in-scope hosts only")
+	fs.String("cookies-file", "", "Netscape cookie jar; in-scope hosts only")
+	fs.String("proxy", "", "HTTP proxy URL (for example http://127.0.0.1:8080)")
+	fs.Float64("rate", 5, "per-host requests per second")
+	fs.Int("concurrency", 10, "max concurrent in-flight requests")
+	fs.Duration("delay", 0, "additional delay between per-host requests")
+	fs.Duration("timeout", 10*time.Second, "per-request timeout")
 }
 
 func bindFlags(v *viper.Viper, cmd *cobra.Command) error {
@@ -70,44 +92,10 @@ func bindFlags(v *viper.Viper, cmd *cobra.Command) error {
 	return nil
 }
 
-func loadConfig(v *viper.Viper, cmd *cobra.Command) error {
-	cfgFile, err := cmd.Flags().GetString("config")
-	if err != nil {
-		return fmt.Errorf("reading config flag: %w", err)
-	}
-
-	if cfgFile != "" {
-		v.SetConfigFile(cfgFile)
-	} else {
-		home, homeErr := os.UserHomeDir()
-		if homeErr != nil {
-			return fmt.Errorf("finding home directory: %w", homeErr)
-		}
-
-		v.AddConfigPath(home)
-		v.AddConfigPath(".")
-		v.SetConfigName(".detour")
-		v.SetConfigType("yaml")
-	}
-
-	v.SetEnvPrefix(envPrefix)
-	v.SetEnvKeyReplacer(strings.NewReplacer("-", "_", ".", "_"))
-	v.AutomaticEnv()
-
-	if err := v.ReadInConfig(); err != nil {
-		var notFound viper.ConfigFileNotFoundError
-		if !errors.As(err, &notFound) {
-			return fmt.Errorf("reading config: %w", err)
-		}
-	}
-
-	return nil
-}
-
-func setupLogger(v *viper.Viper, errOut io.Writer) {
+func setupLogger(levelName string, errOut io.Writer) {
 	level := slog.LevelInfo
 
-	switch strings.ToLower(v.GetString("log-level")) {
+	switch strings.ToLower(levelName) {
 	case "debug":
 		level = slog.LevelDebug
 	case "warn":
