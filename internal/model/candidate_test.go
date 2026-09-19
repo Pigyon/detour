@@ -123,3 +123,10 @@ func TestNewFindingSchemaVersion(t *testing.T) {
 	require.NotNil(t, f.Evidence)
 	assert.Empty(t, f.Evidence)
 }
+
+func TestVerdictConstants(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "confirmed", model.VerdictConfirmed)
+	assert.Equal(t, "candidate", model.VerdictCandidate)
+}

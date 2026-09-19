@@ -12,6 +12,7 @@ import (
 	"github.com/nedlir/detour/internal/client"
 	"github.com/nedlir/detour/internal/config"
 	"github.com/nedlir/detour/internal/lab"
+	"github.com/nedlir/detour/internal/model"
 	"github.com/nedlir/detour/internal/scope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -53,9 +54,41 @@ func TestAttackFindsA01(t *testing.T) {
 		assert.True(t, f.Capabilities.InputControlled)
 		assert.True(t, f.Capabilities.RedirectExternal)
 		assert.Equal(t, "1", f.SchemaVersion)
+
+		if f.TechniqueID == "OR-A01" {
+			assert.Equal(t, model.VerdictConfirmed, f.Verdict)
+		}
 	}
 
 	assert.Contains(t, ids, "OR-A01")
+}
+
+func TestAttackA03IsCandidate(t *testing.T) {
+	t.Parallel()
+
+	eng, srv := newEngine(t)
+	findings, err := eng.Run(
+		context.Background(),
+		[]string{srv.URL + "/a03?url=https://allowed.lab/"},
+	)
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+
+	found := false
+
+	for _, f := range findings {
+		if f.TechniqueID != "OR-A03" {
+			continue
+		}
+
+		found = true
+
+		assert.Equal(t, model.VerdictCandidate, f.Verdict)
+		assert.False(t, f.Capabilities.BrowserConfirmed)
+		assert.True(t, f.Capabilities.InputControlled)
+	}
+
+	assert.True(t, found)
 }
 
 func TestAttackKeyword(t *testing.T) {

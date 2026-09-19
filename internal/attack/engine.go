@@ -377,6 +377,12 @@ func (e *Engine) finding(
 	f.Capabilities.RedirectExternal = true
 	f.Capabilities.InputControlled = true
 	f.Capabilities.HopCount = 0
+	f.Verdict = model.VerdictConfirmed
+
+	if resolve.NeedsBrowserConfirm(source, e.canary, pair) {
+		f.Verdict = model.VerdictCandidate
+	}
+
 	f.Candidate.Capabilities = f.Capabilities
 	f.Evidence = []string{
 		fmt.Sprintf("status %d", status),

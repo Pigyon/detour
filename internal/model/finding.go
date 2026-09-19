@@ -1,8 +1,14 @@
 // Package model holds the engine's core types, centered on NavigationCandidate.
 package model
 
-// FindingSchemaVersion is the schema_version written on every finding record.
-const FindingSchemaVersion = "1"
+const (
+	// FindingSchemaVersion is the schema_version written on every finding record.
+	FindingSchemaVersion = "1"
+	// VerdictConfirmed is a server-side resolver decision.
+	VerdictConfirmed = "confirmed"
+	// VerdictCandidate needs headless confirmation (browser-quirk families).
+	VerdictCandidate = "candidate"
+)
 
 // FieldPath locates a URL inside a decoded representation (JSONPath-style).
 type FieldPath string
@@ -59,6 +65,7 @@ type Finding struct {
 	Capabilities  CapabilitySet       `json:"capabilities"`
 	Evidence      []string            `json:"evidence,omitempty"`
 	Repro         string              `json:"repro,omitempty"`
+	Verdict       string              `json:"verdict,omitempty"`
 }
 
 // NewFinding returns a finding with schema version set and slices initialized.

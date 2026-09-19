@@ -161,6 +161,12 @@ func writeFindingMarkdown(b *strings.Builder, f model.Finding) error {
 		return fmt.Errorf("writing finding mechanism: %w", err)
 	}
 
+	if f.Verdict != "" {
+		if _, err := fmt.Fprintf(b, "- verdict: %s\n", f.Verdict); err != nil {
+			return fmt.Errorf("writing finding verdict: %w", err)
+		}
+	}
+
 	if _, err := fmt.Fprintf(b, "- payload: `%s`\n", f.Payload); err != nil {
 		return fmt.Errorf("writing finding payload: %w", err)
 	}
