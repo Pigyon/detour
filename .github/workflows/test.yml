@@ -40,6 +40,9 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Lab zero-FP and M1 recall
+        run: go test -race -count=1 ./internal/attack -run 'TestLab(ZeroFalsePositives|M1Recall)$'
+
       - name: Run tests
         run: go test -v -race -shuffle=on -coverprofile=coverage.out ./...
 

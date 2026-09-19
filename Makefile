@@ -9,7 +9,7 @@ COMMIT?=$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 DATE?=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS=-ldflags "-X github.com/nedlir/detour/internal/cli.version=$(VERSION) -X github.com/nedlir/detour/internal/cli.commit=$(COMMIT) -X github.com/nedlir/detour/internal/cli.date=$(DATE)"
 
-.PHONY: all build clean test lint run install help
+.PHONY: all build clean test lint run install help lab-gate
 
 all: clean lint test build
 
@@ -28,6 +28,10 @@ clean:
 test:
 	@echo "Running tests..."
 	$(GO) test -race -shuffle=on -coverprofile=coverage.out ./...
+
+## lab-gate: Run the lab zero-FP and M1 recall tests
+lab-gate:
+	$(GO) test -race -count=1 ./internal/attack -run 'TestLab(ZeroFalsePositives|M1Recall)$$'
 
 ## lint: Run linter
 lint:
