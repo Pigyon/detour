@@ -57,3 +57,32 @@ func TestAttackCommandHAR(t *testing.T) {
 	assert.Contains(t, out.String(), `"technique_id"`)
 	assert.Contains(t, errOut.String(), "findings")
 }
+
+func TestAttackCommandFilterAndOut(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(lab.New().Handler())
+	t.Cleanup(srv.Close)
+
+	list := filepath.Join(t.TempDir(), "urls.txt")
+	body := srv.URL + "/a01?url=https://allowed.lab/\n" + srv.URL + "/d01\n"
+	require.NoError(t, os.WriteFile(list, []byte(body), 0o600))
+
+	outDir := filepath.Join(t.TempDir(), "out")
+	cmd := cli.NewRoot()
+	out := new(bytes.Buffer)
+	errOut := new(bytes.Buffer)
+
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+	cmd.SetArgs([]string{"--rate", "50", "attack", "--filter", "header", "--out", outDir, list})
+
+	require.NoError(t, cmd.Execute())
+	assert.Contains(t, out.String(), `"OR-D01"`)
+	assert.NotContains(t, out.String(), `"OR-A01"`)
+
+	md, err := os.ReadFile(filepath.Join(outDir, "report.md")) //nolint:gosec // G304: outDir is t.TempDir output we wrote.
+	require.NoError(t, err)
+	assert.Contains(t, string(md), "OR-D01")
+	assert.NotContains(t, string(md), "OR-A01")
+}

@@ -10,11 +10,16 @@ import (
 	"github.com/nedlir/detour/internal/client"
 	"github.com/nedlir/detour/internal/config"
 	"github.com/nedlir/detour/internal/payload"
+	"github.com/nedlir/detour/internal/report"
 	"github.com/spf13/cobra"
 )
 
 func newAttackCmd() *cobra.Command {
-	var keyword string
+	var (
+		keyword string
+		filter  string
+		outDir  string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "attack source",
@@ -22,16 +27,18 @@ func newAttackCmd() *cobra.Command {
 		Long:  "attack reads a URL list, HAR, Burp export, jsonl stream, or stdin (-) and emits capability-scored findings as JSONL.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAttack(cmd, args[0], keyword)
+			return runAttack(cmd, args[0], keyword, filter, outDir)
 		},
 	}
 
 	cmd.Flags().StringVar(&keyword, "keyword", payload.DefaultKeyword, "injection mark replaced by each payload")
+	cmd.Flags().StringVar(&filter, "filter", "", "comma-separated mechanisms to report (header,js,meta,refresh,crlf,blob,query)")
+	cmd.Flags().StringVar(&outDir, "out", "", "write findings.jsonl, findings.json, and report.md to this directory")
 
 	return cmd
 }
 
-func runAttack(cmd *cobra.Command, source, keyword string) error {
+func runAttack(cmd *cobra.Command, source, keyword, filter, outDir string) error {
 	cfg, ok := config.FromContext(cmd.Context())
 	if !ok {
 		return errors.New("config not loaded")
@@ -61,6 +68,19 @@ func runAttack(cmd *cobra.Command, source, keyword string) error {
 	findings, err := eng.Run(cmd.Context(), urls)
 	if err != nil {
 		return err
+	}
+
+	allow, err := report.ParseFilter(filter)
+	if err != nil {
+		return err
+	}
+
+	findings = report.Apply(findings, allow)
+
+	if outDir != "" {
+		if err := report.Write(outDir, findings); err != nil {
+			return err
+		}
 	}
 
 	enc := json.NewEncoder(cmd.OutOrStdout())

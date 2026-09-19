@@ -51,6 +51,7 @@ type Attempt struct {
 type Finding struct {
 	SchemaVersion string              `json:"schema_version"`
 	TechniqueID   string              `json:"technique_id"`
+	Mechanism     string              `json:"mechanism,omitempty"`
 	Payload       string              `json:"payload"`
 	Rationale     string              `json:"rationale,omitempty"`
 	Precedent     string              `json:"precedent,omitempty"`

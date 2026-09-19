@@ -355,6 +355,7 @@ func (e *Engine) finding(
 
 	f := model.NewFinding()
 	f.TechniqueID = p.Technique
+	f.Mechanism = p.Mechanism
 	f.Payload = expanded
 	f.Candidate = cand
 	f.Capabilities.RedirectExternal = true
