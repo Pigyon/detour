@@ -276,14 +276,10 @@ func ParseRefresh(header string) (string, bool) {
 
 // LocationsFromRaw returns every Location header value from a raw HTTP head.
 func LocationsFromRaw(raw []byte) []string {
-	head, _, _ := bytes.Cut(raw, []byte("\r\n\r\n"))
-	if !bytes.Contains(raw, []byte("\r\n\r\n")) {
-		head = raw
-	}
-
+	head := headerBlock(raw)
 	found := []string{}
 
-	for _, line := range bytes.Split(head, []byte("\r\n")) {
+	for _, line := range splitHeaderLines(head) {
 		if len(line) == 0 {
 			continue
 		}
@@ -301,4 +297,24 @@ func LocationsFromRaw(raw []byte) []string {
 	}
 
 	return found
+}
+
+func headerBlock(raw []byte) []byte {
+	if head, _, ok := bytes.Cut(raw, []byte("\r\n\r\n")); ok {
+		return head
+	}
+
+	if head, _, ok := bytes.Cut(raw, []byte("\n\n")); ok {
+		return head
+	}
+
+	return raw
+}
+
+func splitHeaderLines(head []byte) [][]byte {
+	if bytes.Contains(head, []byte("\r\n")) {
+		return bytes.Split(head, []byte("\r\n"))
+	}
+
+	return bytes.Split(head, []byte("\n"))
 }

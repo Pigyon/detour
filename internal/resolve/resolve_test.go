@@ -143,6 +143,23 @@ func TestLocationsFromRaw(t *testing.T) {
 	raw := []byte("HTTP/1.1 302 Found\r\nLocation: /safe\r\nLocation: " + attackerURL + "\r\n\r\nbody")
 	locs := resolve.LocationsFromRaw(raw)
 	require.Equal(t, []string{"/safe", attackerURL}, locs)
+
+	lf := []byte("HTTP/1.1 302 Found\nLocation: /safe\nLocation: " + attackerURL + "\n\nbody")
+	assert.Equal(t, []string{"/safe", attackerURL}, resolve.LocationsFromRaw(lf))
+}
+
+func FuzzLocationsFromRaw(f *testing.F) {
+	f.Add([]byte("HTTP/1.1 302 Found\r\nLocation: /safe\r\nLocation: https://evil.example/\r\n\r\n"))
+	f.Add([]byte("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n"))
+	f.Add([]byte("Location: https://a.example/\nLocation: https://b.example/\n\n"))
+
+	f.Fuzz(func(_ *testing.T, raw []byte) {
+		if len(raw) > 1<<16 {
+			return
+		}
+
+		_ = resolve.LocationsFromRaw(raw)
+	})
 }
 
 func TestOffOrigin(t *testing.T) {

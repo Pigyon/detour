@@ -87,6 +87,27 @@ func TestAttackHeaderD01(t *testing.T) {
 	assert.True(t, found)
 }
 
+func TestAttackCRLFA11(t *testing.T) {
+	t.Parallel()
+
+	eng, srv := newEngine(t)
+	findings, err := eng.Run(context.Background(), []string{srv.URL + "/a11/safe"})
+	require.NoError(t, err)
+	require.NotEmpty(t, findings)
+
+	found := false
+
+	for _, f := range findings {
+		if f.TechniqueID == "OR-A11" {
+			found = true
+
+			assert.Equal(t, "path_segment", f.Candidate.Representation.String())
+		}
+	}
+
+	assert.True(t, found)
+}
+
 func TestAttackDecoyAllowlistZeroFP(t *testing.T) {
 	t.Parallel()
 

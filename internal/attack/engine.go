@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"strings"
 	"sync"
@@ -15,6 +16,11 @@ import (
 	"github.com/nedlir/detour/internal/payload"
 	"github.com/nedlir/detour/internal/pool"
 	"github.com/nedlir/detour/internal/resolve"
+)
+
+const (
+	mechHeader = "header"
+	mechCRLF   = "crlf"
 )
 
 var redirectParams = []string{
@@ -111,7 +117,7 @@ func (e *Engine) attackOne(ctx context.Context, raw string) ([]model.Finding, er
 
 	for _, p := range e.payloads {
 		switch p.Mechanism {
-		case "header":
+		case mechHeader:
 			f, ok, err := e.probeHeader(ctx, raw, p)
 			if err != nil {
 				return nil, err
@@ -120,8 +126,15 @@ func (e *Engine) attackOne(ctx context.Context, raw string) ([]model.Finding, er
 			if ok {
 				hits = append(hits, f)
 			}
-		case "crlf":
-			continue
+		case mechCRLF:
+			f, ok, err := e.probeCRLF(ctx, raw, p)
+			if err != nil {
+				return nil, err
+			}
+
+			if ok {
+				hits = append(hits, f)
+			}
 		default:
 			hits = append(hits, e.attackParams(ctx, parsed, p, seen)...)
 		}
@@ -134,7 +147,7 @@ func (e *Engine) attackKeyword(ctx context.Context, raw string) ([]model.Finding
 	hits := []model.Finding{}
 
 	for _, p := range e.payloads {
-		if p.Mechanism == "header" || p.Mechanism == "crlf" {
+		if p.Mechanism == mechHeader {
 			continue
 		}
 
@@ -221,6 +234,15 @@ func (e *Engine) probeHeader(ctx context.Context, raw string, p payload.Payload)
 	return e.confirm(ctx, raw, raw, raw, expanded, p, "", headers, altHeaders)
 }
 
+func (e *Engine) probeCRLF(ctx context.Context, raw string, p payload.Payload) (model.Finding, bool, error) {
+	expanded := payload.Expand(p, e.canary, hostOf(raw))
+	altExpanded := payload.Expand(p, AltCanary(e.canary), hostOf(raw))
+	probed := joinPath(raw, expanded)
+	altProbed := joinPath(raw, altExpanded)
+
+	return e.confirm(ctx, raw, probed, altProbed, expanded, p, "", nil, nil)
+}
+
 func (e *Engine) confirm(
 	ctx context.Context,
 	source, probed, altProbed, expanded string,
@@ -228,7 +250,7 @@ func (e *Engine) confirm(
 	param string,
 	extra, altExtra http.Header,
 ) (model.Finding, bool, error) {
-	pair, dest, status, err := e.readDest(ctx, probed, extra)
+	pair, dest, status, err := e.readDest(ctx, probed, extra, e.canary)
 	if err != nil {
 		return model.Finding{}, false, err
 	}
@@ -237,7 +259,7 @@ func (e *Engine) confirm(
 		return model.Finding{}, false, nil
 	}
 
-	altPair, _, _, err := e.readDest(ctx, altProbed, altExtra)
+	altPair, _, _, err := e.readDest(ctx, altProbed, altExtra, AltCanary(e.canary))
 	if err != nil {
 		return model.Finding{}, false, err
 	}
@@ -249,7 +271,7 @@ func (e *Engine) confirm(
 	return e.finding(source, probed, expanded, param, p, pair, dest, status), true, nil
 }
 
-func (e *Engine) readDest(ctx context.Context, raw string, extra http.Header) (resolve.Pair, string, int, error) {
+func (e *Engine) readDest(ctx context.Context, raw string, extra http.Header, canary string) (resolve.Pair, string, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
 		return resolve.Pair{}, "", 0, fmt.Errorf("building request: %w", err)
@@ -268,28 +290,48 @@ func (e *Engine) readDest(ctx context.Context, raw string, extra http.Header) (r
 
 	defer func() { _ = resp.Body.Close() }()
 
+	dests := destValues(resp)
+
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
 
-	dests := destValues(resp)
-	if len(dests) == 0 {
-		return resolve.Pair{}, "", resp.StatusCode, nil
+	if pair, dest, ok := pickCanaryDest(raw, dests, canary); ok {
+		return pair, dest, resp.StatusCode, nil
 	}
 
-	pair, err := resolve.Interpret(raw, dests[len(dests)-1])
-	if err != nil {
-		return resolve.Pair{}, dests[len(dests)-1], resp.StatusCode, nil
-	}
-
-	return pair, dests[len(dests)-1], resp.StatusCode, nil
+	return resolve.Pair{}, "", resp.StatusCode, nil
 }
 
 func destValues(resp *http.Response) []string {
 	dests := append([]string{}, resp.Header.Values("Location")...)
+
+	if raw, err := httputil.DumpResponse(resp, false); err == nil {
+		dests = append(dests, resolve.LocationsFromRaw(raw)...)
+	}
+
 	if u, ok := resolve.ParseRefresh(resp.Header.Get("Refresh")); ok {
 		dests = append(dests, u)
 	}
 
 	return dests
+}
+
+func pickCanaryDest(base string, dests []string, canary string) (resolve.Pair, string, bool) {
+	for _, dest := range dests {
+		if dest == "" {
+			continue
+		}
+
+		pair, err := resolve.Interpret(base, dest)
+		if err != nil {
+			continue
+		}
+
+		if resolve.HitsCanary(pair, canary) {
+			return pair, dest, true
+		}
+	}
+
+	return resolve.Pair{}, "", false
 }
 
 func (e *Engine) finding(
@@ -300,8 +342,12 @@ func (e *Engine) finding(
 	status int,
 ) model.Finding {
 	rep := model.RepresentationQueryParameter
-	if param == "" && extraIsHeader(p.Mechanism) {
+
+	switch {
+	case extraIsHeader(p.Mechanism):
 		rep = model.RepresentationHeader
+	case p.Mechanism == mechCRLF:
+		rep = model.RepresentationPathSegment
 	}
 
 	cand := model.NewNavigationCandidate(source, rep)
@@ -327,7 +373,31 @@ func (e *Engine) finding(
 }
 
 func extraIsHeader(mechanism string) bool {
-	return mechanism == "header"
+	return mechanism == mechHeader
+}
+
+func joinPath(raw, suffix string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+
+	path := parsed.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+
+	path = strings.TrimSuffix(path, "/") + suffix
+	parsed.RawPath = path
+
+	decoded, decErr := url.PathUnescape(path)
+	if decErr != nil {
+		parsed.Path = path
+	} else {
+		parsed.Path = decoded
+	}
+
+	return parsed.String()
 }
 
 func trustedHost(parsed *url.URL, current string) string {
