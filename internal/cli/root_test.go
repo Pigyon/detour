@@ -50,6 +50,7 @@ func TestRootHelp(t *testing.T) {
 	assert.Contains(t, buf.String(), "detour")
 	assert.Contains(t, buf.String(), "scope")
 	assert.Contains(t, buf.String(), "lab")
+	assert.Contains(t, buf.String(), "attack")
 	assert.Contains(t, buf.String(), "--canary")
 	assert.Contains(t, buf.String(), "--scope-file")
 }

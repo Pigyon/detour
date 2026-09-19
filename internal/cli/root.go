@@ -63,6 +63,7 @@ func NewRoot() *cobra.Command {
 	root.AddCommand(newVersionCmd())
 	root.AddCommand(newScopeCmd())
 	root.AddCommand(newLabCmd())
+	root.AddCommand(newAttackCmd())
 
 	return root
 }
