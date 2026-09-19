@@ -19,7 +19,7 @@ func newAttackCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "attack source",
 		Short: "Probe a URL list or stdin for open redirects",
-		Long:  "attack reads URLs from a file or stdin (-) and emits capability-scored findings as JSONL.",
+		Long:  "attack reads a URL list, HAR, Burp export, jsonl stream, or stdin (-) and emits capability-scored findings as JSONL.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runAttack(cmd, args[0], keyword)

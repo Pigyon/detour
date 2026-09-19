@@ -34,3 +34,26 @@ func TestAttackCommandJSONL(t *testing.T) {
 	assert.Contains(t, out.String(), `"technique_id"`)
 	assert.Contains(t, errOut.String(), "findings")
 }
+
+func TestAttackCommandHAR(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(lab.New().Handler())
+	t.Cleanup(srv.Close)
+
+	har := `{"log":{"entries":[{"request":{"url":"` + srv.URL + `/a01?url=https://allowed.lab/"}}]}}`
+	path := filepath.Join(t.TempDir(), "run.har")
+	require.NoError(t, os.WriteFile(path, []byte(har), 0o600))
+
+	cmd := cli.NewRoot()
+	out := new(bytes.Buffer)
+	errOut := new(bytes.Buffer)
+
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+	cmd.SetArgs([]string{"--rate", "50", "attack", path})
+
+	require.NoError(t, cmd.Execute())
+	assert.Contains(t, out.String(), `"technique_id"`)
+	assert.Contains(t, errOut.String(), "findings")
+}
