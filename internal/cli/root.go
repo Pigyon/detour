@@ -60,6 +60,7 @@ func NewRoot() *cobra.Command {
 
 	registerPersistentFlags(root)
 	root.AddCommand(newVersionCmd())
+	root.AddCommand(newScopeCmd())
 
 	return root
 }
