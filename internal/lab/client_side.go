@@ -7,7 +7,9 @@ import (
 	"net/http"
 )
 
-func registerC(mux *http.ServeMux) {
+// registerClientSide mounts client-side-only fixtures (OR-C01 through
+// OR-C04): JS sinks, hash navigation, iframe takeover, and meta refresh.
+func registerClientSide(mux *http.ServeMux) {
 	mux.HandleFunc("GET /c01", handleC01)
 	mux.HandleFunc("GET /c02", handleC02)
 	mux.HandleFunc("GET /c03", handleC03)

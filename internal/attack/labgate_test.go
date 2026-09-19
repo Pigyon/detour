@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var m1RecallIDs = []string{"OR-A01", "OR-A03", "OR-A07", "OR-A11", "OR-D01"}
+var recallIDs = []string{"OR-A01", "OR-A03", "OR-A07", "OR-A11", "OR-D01"}
 
 func TestLabZeroFalsePositives(t *testing.T) {
 	t.Parallel()
@@ -34,14 +34,14 @@ func TestLabZeroFalsePositives(t *testing.T) {
 	assert.Empty(t, findings)
 }
 
-func TestLabM1Recall(t *testing.T) {
+func TestLabRecall(t *testing.T) {
 	t.Parallel()
 
 	eng, srv := newEngine(t)
 	urls := []string{}
 	want := map[string]struct{}{}
 
-	for _, id := range m1RecallIDs {
+	for _, id := range recallIDs {
 		want[id] = struct{}{}
 	}
 

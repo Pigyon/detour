@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestClassCShapes(t *testing.T) {
+func TestClientSideShapes(t *testing.T) {
 	t.Parallel()
 
 	srv := newLabServer(t)

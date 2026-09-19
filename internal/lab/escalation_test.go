@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestClassFAndScenarios(t *testing.T) {
+func TestEscalationScenarios(t *testing.T) {
 	t.Parallel()
 
 	srv := newLabServer(t)
@@ -70,7 +70,7 @@ func TestClassFAndScenarios(t *testing.T) {
 	})
 }
 
-func TestClassFPrimitives(t *testing.T) {
+func TestEscalationPrimitives(t *testing.T) {
 	t.Parallel()
 
 	srv := newLabServer(t)

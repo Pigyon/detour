@@ -6,7 +6,10 @@ import (
 	"strings"
 )
 
-func registerD(mux *http.ServeMux) {
+// registerInfrastructure mounts fixtures that take no query parameter
+// (OR-D01 through OR-D06): forwarded host, destHost, raw path, SAML,
+// Referer, and Refresh.
+func registerInfrastructure(mux *http.ServeMux) {
 	mux.HandleFunc("GET /d01", handleD01)
 	mux.HandleFunc("GET /d01/{path...}", handleD01)
 	mux.HandleFunc("GET /_next/d02", handleD02)

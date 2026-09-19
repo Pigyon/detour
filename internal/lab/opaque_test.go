@@ -52,7 +52,7 @@ func FuzzDecodeClick(f *testing.F) {
 	})
 }
 
-func TestClassBShapes(t *testing.T) {
+func TestOpaqueDestinationShapes(t *testing.T) {
 	t.Parallel()
 
 	srv := newLabServer(t)

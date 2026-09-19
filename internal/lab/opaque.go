@@ -23,7 +23,10 @@ type ClickEnvelope struct {
 	Integrity string
 }
 
-func registerB(mux *http.ServeMux) {
+// registerOpaqueDestinations mounts encoded and opaque destination fixtures
+// (OR-B01 through OR-B05): click blobs, unsigned wrappers, JWT claims,
+// double-decode, and nested hops.
+func registerOpaqueDestinations(mux *http.ServeMux) {
 	mux.HandleFunc("GET /track/click2/{blob}", handleClick)
 	mux.HandleFunc("GET /ls/click", handleUPN)
 	mux.HandleFunc("GET /b03", handleJWT)

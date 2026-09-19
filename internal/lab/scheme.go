@@ -6,7 +6,9 @@ import (
 	"strings"
 )
 
-func registerE(mux *http.ServeMux) {
+// registerSchemeAbuse mounts scheme-abuse fixtures (OR-E01 through OR-E03):
+// javascript:, data:, and http: downgrade on an otherwise exact host allowlist.
+func registerSchemeAbuse(mux *http.ServeMux) {
 	mux.HandleFunc("GET /e01", handleE01)
 	mux.HandleFunc("GET /e02", handleE02)
 	mux.HandleFunc("GET /e03", handleE03)

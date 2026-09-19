@@ -29,9 +29,9 @@ test:
 	@echo "Running tests..."
 	$(GO) test -race -shuffle=on -coverprofile=coverage.out ./...
 
-## lab-gate: Run the lab zero-FP and M1 recall tests
+## lab-gate: Run the lab zero-FP and recall tests
 lab-gate:
-	$(GO) test -race -count=1 ./internal/attack -run 'TestLab(ZeroFalsePositives|M1Recall)$$'
+	$(GO) test -race -count=1 ./internal/attack -run 'TestLab(ZeroFalsePositives|Recall)$$'
 
 ## lint: Run linter
 lint:

@@ -12,7 +12,7 @@ import (
 
 const attacker = "https://evil.example/"
 
-func TestClassAShapes(t *testing.T) {
+func TestParserDifferentialShapes(t *testing.T) {
 	t.Parallel()
 
 	srv := newLabServer(t)

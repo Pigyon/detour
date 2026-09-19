@@ -47,12 +47,12 @@ func New() *Lab {
 func (l *Lab) Handler() http.Handler {
 	mux := http.NewServeMux()
 	registerMeta(mux)
-	registerA(mux)
-	registerB(mux)
-	registerC(mux)
-	registerD(mux)
-	registerE(mux)
-	l.registerF(mux)
+	registerParserDifferentials(mux)
+	registerOpaqueDestinations(mux)
+	registerClientSide(mux)
+	registerInfrastructure(mux)
+	registerSchemeAbuse(mux)
+	l.registerEscalation(mux)
 	registerDecoys(mux)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

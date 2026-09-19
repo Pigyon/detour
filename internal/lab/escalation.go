@@ -12,7 +12,10 @@ import (
 	"time"
 )
 
-func (l *Lab) registerF(mux *http.ServeMux) {
+// registerEscalation mounts escalation and vendor-scenario fixtures (OR-F01
+// through OR-F10): OAuth nesting, CSP allowlists, SSRF follow, phishing,
+// and cache poisoning.
+func (l *Lab) registerEscalation(mux *http.ServeMux) {
 	mux.HandleFunc("GET /oauth/authorize", handleOAuthAuthorize)
 	mux.HandleFunc("GET /csp", handleCSP)
 	mux.HandleFunc("GET /csp/redir", paramRedirect("url", nonempty))

@@ -6,7 +6,10 @@ import (
 	"strings"
 )
 
-func registerA(mux *http.ServeMux) {
+// registerParserDifferentials mounts parser-differential fixtures (OR-A01
+// through OR-A15). Each route models a validate-then-use gap between an
+// allowlist and the Location sink.
+func registerParserDifferentials(mux *http.ServeMux) {
 	mux.HandleFunc("GET /a01", paramRedirect("url", allowA01))
 	mux.HandleFunc("GET /a02", paramRedirect("url", allowA02))
 	mux.HandleFunc("GET /a03", paramRedirect("url", allowA03))
