@@ -3,10 +3,12 @@ package attack_test
 import (
 	"context"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/nedlir/detour/internal/attack"
+	"github.com/nedlir/detour/internal/checkpoint"
 	"github.com/nedlir/detour/internal/client"
 	"github.com/nedlir/detour/internal/config"
 	"github.com/nedlir/detour/internal/lab"
@@ -118,6 +120,32 @@ func TestAttackDecoyAllowlistZeroFP(t *testing.T) {
 	)
 	require.NoError(t, err)
 	assert.Empty(t, findings)
+}
+
+func TestAttackResumeSkipsCompleted(t *testing.T) {
+	t.Parallel()
+
+	eng, srv := newEngine(t)
+	path := filepath.Join(t.TempDir(), "run.ckpt")
+	store, err := checkpoint.Open(path)
+	require.NoError(t, err)
+
+	eng.SetCheckpoint(store)
+
+	urls := []string{srv.URL + "/a01?url=https://allowed.lab/"}
+	first, err := eng.Run(context.Background(), urls)
+	require.NoError(t, err)
+	require.NotEmpty(t, first)
+	require.NoError(t, store.Close())
+
+	again, err := checkpoint.Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = again.Close() })
+	eng.SetCheckpoint(again)
+
+	second, err := eng.Run(context.Background(), urls)
+	require.NoError(t, err)
+	assert.Empty(t, second)
 }
 
 func TestAltCanary(t *testing.T) {

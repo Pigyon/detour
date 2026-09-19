@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/nedlir/detour/internal/checkpoint"
 	"github.com/nedlir/detour/internal/client"
 	"github.com/nedlir/detour/internal/model"
 	"github.com/nedlir/detour/internal/payload"
@@ -36,6 +37,7 @@ type Engine struct {
 	keyword     string
 	payloads    []payload.Payload
 	concurrency int
+	checkpoint  *checkpoint.Store
 }
 
 // New builds an engine. payloads may be nil to use payload.BuiltIn.
@@ -59,6 +61,11 @@ func New(c *client.Client, canary, keyword string, concurrency int, payloads []p
 		payloads:    payloads,
 		concurrency: concurrency,
 	}
+}
+
+// SetCheckpoint records attempts so --resume can skip completed work.
+func (e *Engine) SetCheckpoint(store *checkpoint.Store) {
+	e.checkpoint = store
 }
 
 // AltCanary is the independent second host used for the input_controlled check.
@@ -250,21 +257,30 @@ func (e *Engine) confirm(
 	param string,
 	extra, altExtra http.Header,
 ) (model.Finding, bool, error) {
+	if e.checkpoint != nil && e.checkpoint.Seen(source, expanded, p.Technique) {
+		return model.Finding{}, false, nil
+	}
+
 	pair, dest, status, err := e.readDest(ctx, probed, extra, e.canary)
 	if err != nil {
 		return model.Finding{}, false, err
 	}
 
-	if dest == "" || !resolve.HitsCanary(pair, e.canary) {
-		return model.Finding{}, false, nil
+	hit := dest != "" && resolve.HitsCanary(pair, e.canary)
+	if hit {
+		altPair, _, _, err := e.readDest(ctx, altProbed, altExtra, AltCanary(e.canary))
+		if err != nil {
+			return model.Finding{}, false, err
+		}
+
+		hit = resolve.HitsCanary(altPair, AltCanary(e.canary))
 	}
 
-	altPair, _, _, err := e.readDest(ctx, altProbed, altExtra, AltCanary(e.canary))
-	if err != nil {
+	if err := e.checkpoint.RecordAttempt(source, expanded, p.Technique, hit); err != nil {
 		return model.Finding{}, false, err
 	}
 
-	if !resolve.HitsCanary(altPair, AltCanary(e.canary)) {
+	if !hit {
 		return model.Finding{}, false, nil
 	}
 
