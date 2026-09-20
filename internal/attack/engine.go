@@ -448,6 +448,7 @@ func (e *Engine) finding(pr probe, pair resolve.Pair, dest string, status int) m
 	}
 
 	f.Repro = "curl -sI " + pr.probed
+	f.ProbeURL = pr.probed
 
 	return f
 }

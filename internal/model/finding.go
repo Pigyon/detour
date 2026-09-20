@@ -65,7 +65,10 @@ type Finding struct {
 	Capabilities  CapabilitySet       `json:"capabilities"`
 	Evidence      []string            `json:"evidence,omitempty"`
 	Repro         string              `json:"repro,omitempty"`
-	Verdict       string              `json:"verdict,omitempty"`
+	// ProbeURL is the concrete request that produced this finding. The
+	// browser stage replays it, so it must be usable as written.
+	ProbeURL string `json:"probe_url,omitempty"`
+	Verdict  string `json:"verdict,omitempty"`
 }
 
 // NewFinding returns a finding with schema version set and slices initialized.
