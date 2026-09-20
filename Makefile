@@ -33,6 +33,7 @@ test:
 lab-gate:
 	$(GO) test -race -count=1 ./internal/attack -run 'TestLab(ZeroFalsePositives|Recall)$$'
 	$(GO) test -race -count=1 ./internal/js -run 'TestCollectPage(AgainstLab|LabClientSideFixtures)$$'
+	$(GO) test -race -count=1 ./internal/confirm -run 'TestVisit(ConfirmsClientSideClass|LeavesDecoysAlone)$$'
 
 ## lint: Run linter
 lint:
