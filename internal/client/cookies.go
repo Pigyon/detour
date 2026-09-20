@@ -12,6 +12,12 @@ import (
 	"github.com/nedlir/detour/internal/config"
 )
 
+// Cookies resolves the operator's inline and file-based cookies. The browser
+// stage needs the same jar the HTTP client carries.
+func Cookies(cfg config.Config) ([]*http.Cookie, error) {
+	return loadCookies(cfg)
+}
+
 func loadCookies(cfg config.Config) ([]*http.Cookie, error) {
 	cookies := parseCookieHeader(cfg.Cookie)
 	if cfg.CookiesFile == "" {

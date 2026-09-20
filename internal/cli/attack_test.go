@@ -116,5 +116,5 @@ func TestAttackCommandResume(t *testing.T) {
 }
 
 func attackArgs(extra ...string) []string {
-	return append([]string{"--rate", "50", "attack"}, extra...)
+	return append([]string{flagRate, "50", "attack"}, extra...)
 }

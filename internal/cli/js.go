@@ -25,9 +25,10 @@ const maxScriptBytes = 16 << 20
 
 func newJSCmd() *cobra.Command {
 	var (
-		outDir  string
-		dns     bool
-		findOut bool
+		outDir   string
+		dns      bool
+		findOut  bool
+		headless bool
 	)
 
 	cmd := &cobra.Command{
@@ -38,18 +39,19 @@ func newJSCmd() *cobra.Command {
 			"what they do, never by name. Every result is a candidate until a browser confirms it.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runJS(cmd, args[0], outDir, dns, findOut)
+			return runJS(cmd, args[0], outDir, dns, findOut, headless)
 		},
 	}
 
 	cmd.Flags().StringVar(&outDir, "out", "", "write findings.jsonl, findings.json, and report.md to this directory")
 	cmd.Flags().BoolVar(&dns, "dns", false, "resolve every allowlisted host and flag the ones that do not exist")
 	cmd.Flags().BoolVar(&findOut, "findings", false, "emit findings as JSONL instead of the full analysis")
+	cmd.Flags().BoolVar(&headless, "headless", false, "prove candidates in a headless browser (needs Chrome)")
 
 	return cmd
 }
 
-func runJS(cmd *cobra.Command, target, outDir string, dns, findOut bool) error {
+func runJS(cmd *cobra.Command, target, outDir string, dns, findOut, headless bool) error {
 	cfg, ok := config.FromContext(cmd.Context())
 	if !ok {
 		return errors.New("config not loaded")
@@ -69,7 +71,7 @@ func runJS(cmd *cobra.Command, target, outDir string, dns, findOut bool) error {
 		page.ResolveDangling(cmd.Context(), nil)
 	}
 
-	if err := writeJSOutput(cmd, page, outDir, findOut); err != nil {
+	if err := writeJSOutput(cmd, cfg, page, outDir, findOut, headless); err != nil {
 		return err
 	}
 
@@ -87,8 +89,14 @@ func countSinks(page js.PageReport) int {
 	return total
 }
 
-func writeJSOutput(cmd *cobra.Command, page js.PageReport, outDir string, findOut bool) error {
-	findings := page.Findings()
+func writeJSOutput(
+	cmd *cobra.Command,
+	cfg config.Config,
+	page js.PageReport,
+	outDir string,
+	findOut, headless bool,
+) error {
+	findings := maybeConfirm(cmd, cfg, page.Findings(), headless, outDir)
 
 	if outDir != "" {
 		if err := report.Write(outDir, findings); err != nil {

@@ -155,5 +155,5 @@ func techniques(report jsOutput) []string {
 }
 
 func jsArgs(extra ...string) []string {
-	return append([]string{"--rate", "50", "js"}, extra...)
+	return append([]string{flagRate, "50", "js"}, extra...)
 }

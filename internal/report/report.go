@@ -2,9 +2,11 @@
 package report
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -247,4 +249,36 @@ func writeFile(path string, data []byte) error {
 	}
 
 	return nil
+}
+
+// ReadJSONL loads findings written by a previous run. Blank lines are
+// tolerated so a hand-edited list still parses.
+func ReadJSONL(path string) ([]model.Finding, error) {
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: path is the operator-supplied findings list.
+	if err != nil {
+		return nil, fmt.Errorf("reading findings list: %w", err)
+	}
+
+	return DecodeJSONL(raw)
+}
+
+// DecodeJSONL parses a findings stream.
+func DecodeJSONL(raw []byte) ([]model.Finding, error) {
+	out := []model.Finding{}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+
+	for {
+		var f model.Finding
+
+		err := dec.Decode(&f)
+		if errors.Is(err, io.EOF) {
+			return out, nil
+		}
+
+		if err != nil {
+			return nil, fmt.Errorf("decoding finding: %w", err)
+		}
+
+		out = append(out, f)
+	}
 }

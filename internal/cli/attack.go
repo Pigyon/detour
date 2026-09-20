@@ -18,10 +18,11 @@ import (
 
 func newAttackCmd() *cobra.Command {
 	var (
-		keyword string
-		filter  string
-		outDir  string
-		resume  string
+		keyword  string
+		filter   string
+		outDir   string
+		resume   string
+		headless bool
 	)
 
 	cmd := &cobra.Command{
@@ -30,7 +31,7 @@ func newAttackCmd() *cobra.Command {
 		Long:  "attack reads a URL list, HAR, Burp export, jsonl stream, or stdin (-) and emits capability-scored findings as JSONL.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAttack(cmd, args[0], keyword, filter, outDir, resume)
+			return runAttack(cmd, args[0], keyword, filter, outDir, resume, headless)
 		},
 	}
 
@@ -38,11 +39,12 @@ func newAttackCmd() *cobra.Command {
 	cmd.Flags().StringVar(&filter, "filter", "", "comma-separated mechanisms to report (header,js,meta,refresh,crlf,blob,query)")
 	cmd.Flags().StringVar(&outDir, "out", "", "write findings.jsonl, findings.json, and report.md to this directory")
 	cmd.Flags().StringVar(&resume, "resume", "", "append-only checkpoint file; skip completed attempts")
+	cmd.Flags().BoolVar(&headless, "headless", false, "prove candidates in a headless browser (needs Chrome)")
 
 	return cmd
 }
 
-func runAttack(cmd *cobra.Command, source, keyword, filter, outDir, resume string) error {
+func runAttack(cmd *cobra.Command, source, keyword, filter, outDir, resume string, headless bool) error {
 	cfg, ok := config.FromContext(cmd.Context())
 	if !ok {
 		return errors.New("config not loaded")
@@ -80,6 +82,8 @@ func runAttack(cmd *cobra.Command, source, keyword, filter, outDir, resume strin
 	if err != nil {
 		return err
 	}
+
+	findings = maybeConfirm(cmd, cfg, findings, headless, outDir)
 
 	return writeAttackOutput(cmd, findings, filter, outDir)
 }

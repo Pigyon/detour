@@ -125,5 +125,5 @@ func decodeOutput(t *testing.T, raw string) decodeReportOutput {
 }
 
 func decodeArgs(extra ...string) []string {
-	return append([]string{"--rate", "50", "decode"}, extra...)
+	return append([]string{flagRate, "50", "decode"}, extra...)
 }
