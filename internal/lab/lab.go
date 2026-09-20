@@ -53,6 +53,7 @@ func (l *Lab) Handler() http.Handler {
 	registerParserDifferentials(mux)
 	registerOpaqueDestinations(mux)
 	registerClientSide(mux)
+	registerBundles(mux)
 	registerInfrastructure(mux)
 	registerSchemeAbuse(mux)
 	l.registerEscalation(mux)

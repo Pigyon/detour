@@ -44,6 +44,11 @@ func writeHTML(w http.ResponseWriter, body string) {
 	_, _ = fmt.Fprint(w, body)
 }
 
+func writeJS(w http.ResponseWriter, body string) {
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	_, _ = fmt.Fprint(w, body)
+}
+
 func writeJSNav(w http.ResponseWriter, dest string) {
 	payload, err := json.Marshal(dest)
 	if err != nil {
