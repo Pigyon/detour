@@ -65,6 +65,7 @@ func NewRoot() *cobra.Command {
 	root.AddCommand(newLabCmd())
 	root.AddCommand(newAttackCmd())
 	root.AddCommand(newDecodeCmd())
+	root.AddCommand(newJSCmd())
 
 	return root
 }
