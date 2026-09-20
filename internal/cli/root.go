@@ -24,11 +24,25 @@ func Execute(ctx context.Context) error {
 func NewRoot() *cobra.Command {
 	v := config.NewViper()
 
+	pipeline := &reconFlags{}
+
+	var pipelineHeadless bool
+
 	root := &cobra.Command{
-		Use:     "detour",
-		Short:   "Open redirect discovery and verification engine",
-		Long:    "detour reconstructs where a navigation destination is hiding, how it is validated, and how a browser resolves it.",
+		Use:   "detour [target]",
+		Short: "Open redirect discovery and verification engine",
+		Long: "detour reconstructs where a navigation destination is hiding, how it is validated, and how a " +
+			"browser resolves it.\n\nGiven a target, it runs the whole pipeline: surface, harvest, select, " +
+			"attack, and with --headless, browser confirmation.",
 		Version: version,
+		Args:    cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return cmd.Help()
+			}
+
+			return runPipeline(cmd, args[0], pipeline, pipelineHeadless)
+		},
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			if err := bindFlags(v, cmd); err != nil {
 				return err
@@ -60,6 +74,8 @@ func NewRoot() *cobra.Command {
 	}
 
 	registerPersistentFlags(root)
+	pipeline.register(root)
+	root.Flags().BoolVar(&pipelineHeadless, "headless", false, "prove candidates in a headless browser (needs Chrome)")
 	root.AddCommand(newVersionCmd())
 	root.AddCommand(newScopeCmd())
 	root.AddCommand(newLabCmd())
@@ -67,6 +83,10 @@ func NewRoot() *cobra.Command {
 	root.AddCommand(newDecodeCmd())
 	root.AddCommand(newJSCmd())
 	root.AddCommand(newConfirmCmd())
+	root.AddCommand(newHarvestCmd())
+	root.AddCommand(newSurfaceCmd())
+	root.AddCommand(newSelectCmd())
+	root.AddCommand(newDorksCmd())
 
 	return root
 }
