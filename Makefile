@@ -32,6 +32,7 @@ test:
 ## lab-gate: Run the lab zero-FP and recall tests
 lab-gate:
 	$(GO) test -race -count=1 ./internal/attack -run 'TestLab(ZeroFalsePositives|Recall)$$'
+	$(GO) test -race -count=1 ./internal/js -run 'TestCollectPage(AgainstLab|LabClientSideFixtures)$$'
 
 ## lint: Run linter
 lint:
