@@ -262,3 +262,17 @@ func jsonLinesField(body []byte, field string) []string {
 
 	return out
 }
+
+// ArchiveHosts are the public archive services detour reads.
+//
+// They are detour's own data sources, not the target under test, so a scope
+// file naming the target must not lock them out. Traffic to them still passes
+// a scope guard, just one whose allowlist is exactly this set: the canary
+// stays blocked and nothing else becomes reachable.
+var ArchiveHosts = []string{
+	"web.archive.org",
+	"index.commoncrawl.org",
+	"data.commoncrawl.org",
+	"otx.alienvault.com",
+	"urlscan.io",
+}

@@ -17,6 +17,11 @@ type Options struct {
 	Providers []Provider
 	// Crawler is the optional crawl stage. Nil skips it.
 	Crawler Crawler
+	// Archives is the client used for archive services. They are detour's own
+	// data sources rather than the target, so they get a client whose scope
+	// allowlist is the archive hosts. Nil falls back to the target client,
+	// which a scope file will then lock out.
+	Archives Doer
 }
 
 // Crawler walks a target for URLs. Declared here because this is where it is
@@ -43,9 +48,14 @@ type Harvester struct {
 
 // New builds a harvester. A nil provider list uses the keyless defaults.
 func New(client Doer, opts Options) *Harvester {
+	archives := opts.Archives
+	if archives == nil {
+		archives = client
+	}
+
 	providers := opts.Providers
 	if providers == nil {
-		providers = DefaultProviders(client)
+		providers = DefaultProviders(archives)
 	}
 
 	return &Harvester{
