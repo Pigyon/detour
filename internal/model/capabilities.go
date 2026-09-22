@@ -11,6 +11,18 @@ type CapabilitySet struct {
 	SSRFChain        bool `json:"ssrf_chain"`
 	RefererLeak      bool `json:"referer_leak"`
 	OAuthRedirectURI bool `json:"oauth.redirect_uri"`
+
+	// Escalation capabilities. Each names something that turns a bare
+	// redirect into a higher-impact finding. They are facts about shape and
+	// position, never the result of performing the escalation.
+	PostLogoutRedirect bool `json:"oidc.post_logout_redirect_uri,omitempty"`
+	SAMLRelayState     bool `json:"saml.relaystate,omitempty"`
+	DataScheme         bool `json:"data_scheme,omitempty"`
+	CSPBypass          bool `json:"csp_bypass,omitempty"`
+	CSRFReferer        bool `json:"csrf.referer_bypass,omitempty"`
+	CachePoisoned      bool `json:"cache_poisoned,omitempty"`
+	CrossProtocol      bool `json:"cross_protocol,omitempty"`
+	PhishingVector     bool `json:"phishing_vector,omitempty"`
 }
 
 // NewCapabilitySet returns a zero-value capability set.
@@ -26,17 +38,36 @@ func (c CapabilitySet) Clone() CapabilitySet {
 // Merge overlays other onto c. HopCount takes the larger of the two.
 func (c CapabilitySet) Merge(other CapabilitySet) CapabilitySet {
 	out := c
-	out.RedirectExternal = c.RedirectExternal || other.RedirectExternal
-	out.BrowserConfirmed = c.BrowserConfirmed || other.BrowserConfirmed
-	out.InputControlled = c.InputControlled || other.InputControlled
-	out.JavaScriptScheme = c.JavaScriptScheme || other.JavaScriptScheme
-	out.SSRFChain = c.SSRFChain || other.SSRFChain
-	out.RefererLeak = c.RefererLeak || other.RefererLeak
-	out.OAuthRedirectURI = c.OAuthRedirectURI || other.OAuthRedirectURI
+
+	for _, pair := range out.pairs(&other) {
+		*pair.into = *pair.into || *pair.from
+	}
 
 	if other.HopCount > out.HopCount {
 		out.HopCount = other.HopCount
 	}
 
 	return out
+}
+
+// pairs lines up every boolean capability with its counterpart in other, so
+// Merge stays one rule rather than one branch per field.
+func (c *CapabilitySet) pairs(other *CapabilitySet) []struct{ into, from *bool } {
+	return []struct{ into, from *bool }{
+		{&c.RedirectExternal, &other.RedirectExternal},
+		{&c.BrowserConfirmed, &other.BrowserConfirmed},
+		{&c.InputControlled, &other.InputControlled},
+		{&c.JavaScriptScheme, &other.JavaScriptScheme},
+		{&c.SSRFChain, &other.SSRFChain},
+		{&c.RefererLeak, &other.RefererLeak},
+		{&c.OAuthRedirectURI, &other.OAuthRedirectURI},
+		{&c.PostLogoutRedirect, &other.PostLogoutRedirect},
+		{&c.SAMLRelayState, &other.SAMLRelayState},
+		{&c.DataScheme, &other.DataScheme},
+		{&c.CSPBypass, &other.CSPBypass},
+		{&c.CSRFReferer, &other.CSRFReferer},
+		{&c.CachePoisoned, &other.CachePoisoned},
+		{&c.CrossProtocol, &other.CrossProtocol},
+		{&c.PhishingVector, &other.PhishingVector},
+	}
 }
