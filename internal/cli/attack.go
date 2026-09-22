@@ -23,6 +23,7 @@ func newAttackCmd() *cobra.Command {
 		outDir   string
 		resume   string
 		headless bool
+		escalate bool
 	)
 
 	cmd := &cobra.Command{
@@ -31,7 +32,7 @@ func newAttackCmd() *cobra.Command {
 		Long:  "attack reads a URL list, HAR, Burp export, jsonl stream, or stdin (-) and emits capability-scored findings as JSONL.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAttack(cmd, args[0], keyword, filter, outDir, resume, headless)
+			return runAttack(cmd, args[0], keyword, filter, outDir, resume, headless, escalate)
 		},
 	}
 
@@ -40,11 +41,12 @@ func newAttackCmd() *cobra.Command {
 	cmd.Flags().StringVar(&outDir, "out", "", "write findings.jsonl, findings.json, and report.md to this directory")
 	cmd.Flags().StringVar(&resume, "resume", "", "append-only checkpoint file; skip completed attempts")
 	cmd.Flags().BoolVar(&headless, "headless", false, "prove candidates in a headless browser (needs Chrome)")
+	cmd.Flags().BoolVar(&escalate, "escalate", false, "attach escalation capabilities; never performs the escalation")
 
 	return cmd
 }
 
-func runAttack(cmd *cobra.Command, source, keyword, filter, outDir, resume string, headless bool) error {
+func runAttack(cmd *cobra.Command, source, keyword, filter, outDir, resume string, headless, escalate bool) error {
 	cfg, ok := config.FromContext(cmd.Context())
 	if !ok {
 		return errors.New("config not loaded")
@@ -84,6 +86,7 @@ func runAttack(cmd *cobra.Command, source, keyword, filter, outDir, resume strin
 	}
 
 	findings = maybeConfirm(cmd, cfg, findings, headless, outDir)
+	findings = maybeEscalate(findings, escalate)
 
 	return writeAttackOutput(cmd, findings, filter, outDir)
 }
@@ -112,7 +115,7 @@ func writeAttackOutput(cmd *cobra.Command, findings []model.Finding, filter, out
 	findings = report.Apply(findings, allow)
 
 	if outDir != "" {
-		if err := report.Write(outDir, findings); err != nil {
+		if err := report.WriteVersion(outDir, findings, version); err != nil {
 			return err
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,6 +17,9 @@ import (
 	"github.com/nedlir/detour/internal/client"
 	"github.com/nedlir/detour/internal/config"
 	"github.com/nedlir/detour/internal/corpus"
+	"github.com/nedlir/detour/internal/escalate"
+	"github.com/nedlir/detour/internal/js"
+	"github.com/nedlir/detour/internal/model"
 	"github.com/spf13/cobra"
 )
 
@@ -53,9 +57,91 @@ func runPipeline(cmd *cobra.Command, target string, flags *reconFlags, headless 
 		return err
 	}
 
+	// The client-side class is only reachable through the JS stage. Without
+	// it a pipeline run cannot produce an OR-C01 or OR-C02 candidate, and the
+	// browser stage only ever promotes candidates that already exist.
+	findings = append(findings, jsFindings(cmd, c, urls, flags)...)
+
 	findings = maybeConfirm(cmd, cfg, findings, headless, flags.outDir)
+	findings = maybeEscalate(findings, flags.escalate)
 
 	return writeAttackOutput(cmd, findings, "", flags.outDir)
+}
+
+// maybeEscalate attaches escalation capabilities when asked.
+//
+// The stage is a pure function with no network access, so turning it on can
+// never cause a request. What it adds is a reading of what the finding already
+// proves, never a demonstration of it.
+func maybeEscalate(findings []model.Finding, on bool) []model.Finding {
+	if !on {
+		return findings
+	}
+
+	return escalate.AnalyzeAll(findings)
+}
+
+// maxJSPages bounds the client-side pass. Reading a bundle is cheap, but
+// fetching one per selected URL is not, and pages on one site share scripts.
+const maxJSPages = 20
+
+// jsFindings reads client-side code on the selected pages and returns its
+// candidates.
+func jsFindings(
+	cmd *cobra.Command,
+	c *client.Client,
+	urls []string,
+	flags *reconFlags,
+) []model.Finding {
+	if !flags.js || flags.passive || len(urls) == 0 {
+		return nil
+	}
+
+	fetcher := &httpFetcher{client: c}
+	out := []model.Finding{}
+	seen := map[string]struct{}{}
+
+	for _, raw := range urls {
+		if len(seen) >= maxJSPages {
+			break
+		}
+
+		page := withoutQuery(raw)
+		if _, dup := seen[page]; dup {
+			continue
+		}
+
+		seen[page] = struct{}{}
+
+		report, err := js.CollectPage(cmd.Context(), fetcher, page)
+		if err != nil {
+			slog.Debug("js stage skipped a page", "page", page, "reason", err)
+
+			continue
+		}
+
+		out = append(out, report.Findings()...)
+	}
+
+	if len(out) > 0 {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "js: %d client-side candidates from %d pages\n", len(out), len(seen))
+	}
+
+	return out
+}
+
+// withoutQuery reduces a selected URL to the page that serves it. The scripts
+// are the same whatever the query string was.
+func withoutQuery(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+
+	return parsed.String()
 }
 
 // pipelineURLs runs everything up to the attack: surface to seed hosts,
@@ -77,7 +163,7 @@ func pipelineURLs(
 		raw = append(raw, surfaceOrigins(cmd, cfg, domain, flags)...)
 	}
 
-	harvested := harvestFor(cmd.Context(), c, target, flags)
+	harvested := harvestFor(cmd.Context(), cfg, c, target, flags)
 	raw = append(raw, harvested.URLs...)
 
 	for _, msg := range harvested.Errors {

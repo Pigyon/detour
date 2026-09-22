@@ -29,6 +29,7 @@ func newJSCmd() *cobra.Command {
 		dns      bool
 		findOut  bool
 		headless bool
+		escalate bool
 	)
 
 	cmd := &cobra.Command{
@@ -39,7 +40,7 @@ func newJSCmd() *cobra.Command {
 			"what they do, never by name. Every result is a candidate until a browser confirms it.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runJS(cmd, args[0], outDir, dns, findOut, headless)
+			return runJS(cmd, args[0], outDir, dns, findOut, headless, escalate)
 		},
 	}
 
@@ -47,11 +48,12 @@ func newJSCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&dns, "dns", false, "resolve every allowlisted host and flag the ones that do not exist")
 	cmd.Flags().BoolVar(&findOut, "findings", false, "emit findings as JSONL instead of the full analysis")
 	cmd.Flags().BoolVar(&headless, "headless", false, "prove candidates in a headless browser (needs Chrome)")
+	cmd.Flags().BoolVar(&escalate, "escalate", false, "attach escalation capabilities; never performs the escalation")
 
 	return cmd
 }
 
-func runJS(cmd *cobra.Command, target, outDir string, dns, findOut, headless bool) error {
+func runJS(cmd *cobra.Command, target, outDir string, dns, findOut, headless, escalate bool) error {
 	cfg, ok := config.FromContext(cmd.Context())
 	if !ok {
 		return errors.New("config not loaded")
@@ -71,7 +73,7 @@ func runJS(cmd *cobra.Command, target, outDir string, dns, findOut, headless boo
 		page.ResolveDangling(cmd.Context(), nil)
 	}
 
-	if err := writeJSOutput(cmd, cfg, page, outDir, findOut, headless); err != nil {
+	if err := writeJSOutput(cmd, cfg, page, outDir, findOut, headless, escalate); err != nil {
 		return err
 	}
 
@@ -94,12 +96,13 @@ func writeJSOutput(
 	cfg config.Config,
 	page js.PageReport,
 	outDir string,
-	findOut, headless bool,
+	findOut, headless, escalate bool,
 ) error {
 	findings := maybeConfirm(cmd, cfg, page.Findings(), headless, outDir)
+	findings = maybeEscalate(findings, escalate)
 
 	if outDir != "" {
-		if err := report.Write(outDir, findings); err != nil {
+		if err := report.WriteVersion(outDir, findings, version); err != nil {
 			return err
 		}
 	}

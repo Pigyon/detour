@@ -14,6 +14,7 @@ import (
 	"github.com/nedlir/detour/internal/dork"
 	"github.com/nedlir/detour/internal/harvest"
 	"github.com/nedlir/detour/internal/hidden"
+	"github.com/nedlir/detour/internal/scope"
 	"github.com/nedlir/detour/internal/surface"
 	"github.com/spf13/cobra"
 )
@@ -24,6 +25,8 @@ type reconFlags struct {
 	vendorOnly bool
 	deep       bool
 	crawl      bool
+	js         bool
+	escalate   bool
 	depth      int
 	outDir     string
 }
@@ -34,6 +37,8 @@ func (r *reconFlags) register(cmd *cobra.Command) {
 	fs.BoolVar(&r.vendorOnly, "vendor-only", false, "keep only known ESP and martech click wrappers")
 	fs.BoolVar(&r.deep, "deep", false, "brute-force hidden redirect parameters on endpoints with no candidate")
 	fs.BoolVar(&r.crawl, "crawl", true, "crawl the target for URLs (ignored under --passive)")
+	fs.BoolVar(&r.js, "js", true, "read client-side code for navigation sinks (ignored under --passive)")
+	fs.BoolVar(&r.escalate, "escalate", false, "attach escalation capabilities; never performs the escalation")
 	fs.IntVar(&r.depth, "depth", 3, "crawl depth")
 	fs.StringVar(&r.outDir, "out", "", "write results to this directory")
 }
@@ -69,17 +74,28 @@ func runHarvest(cmd *cobra.Command, target string, flags *reconFlags) error {
 		return err
 	}
 
-	result := harvestFor(cmd.Context(), c, target, flags)
+	result := harvestFor(cmd.Context(), cfg, c, target, flags)
 
 	return writeJSON(cmd, result, fmt.Sprintf("%d urls from %d sources", len(result.URLs), len(result.Sources)))
 }
 
 // harvestFor runs the harvest stage for a target, which may be a bare domain
 // or a full URL.
-func harvestFor(ctx context.Context, c *client.Client, target string, flags *reconFlags) harvest.Result {
+func harvestFor(
+	ctx context.Context,
+	cfg config.Config,
+	c *client.Client,
+	target string,
+	flags *reconFlags,
+) harvest.Result {
 	domain, base := splitTarget(target)
 
 	opts := harvest.Options{Passive: flags.passive}
+
+	if archives, err := archiveClient(cfg); err == nil {
+		opts.Archives = archives
+	}
+
 	if !flags.passive && flags.crawl {
 		opts.Crawler = harvest.NewCrawler(c, harvest.CrawlOptions{
 			Depth:    flags.depth,
@@ -89,6 +105,18 @@ func harvestFor(ctx context.Context, c *client.Client, target string, flags *rec
 	}
 
 	return harvest.New(c, opts).Run(ctx, domain, base)
+}
+
+// archiveClient builds a client that may reach the public archives and
+// nothing else. The target's own scope file governs target traffic; it must
+// not decide whether detour can read Wayback.
+func archiveClient(cfg config.Config) (*client.Client, error) {
+	guard, err := scope.Parse(harvest.ArchiveHosts, cfg.Canary)
+	if err != nil {
+		return nil, err
+	}
+
+	return client.New(cfg, guard)
 }
 
 func newSurfaceCmd() *cobra.Command {

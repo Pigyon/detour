@@ -129,7 +129,7 @@ func loadFindings(cmd *cobra.Command, list string) ([]model.Finding, error) {
 
 func writeConfirmOutput(cmd *cobra.Command, findings []model.Finding, summary confirm.Summary, outDir string) error {
 	if outDir != "" {
-		if err := report.Write(outDir, findings); err != nil {
+		if err := report.WriteVersion(outDir, findings, version); err != nil {
 			return err
 		}
 	}
