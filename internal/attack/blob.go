@@ -38,9 +38,9 @@ func (e *Engine) attackBlobs(ctx context.Context, raw string) ([]model.Finding, 
 	return hits, nil
 }
 
-// attackBlobField walks the URL-shaped payloads against one destination field
-// and stops at the first hit. Once an envelope is shown not to authenticate
-// its destination, further payloads only add duplicate findings.
+// attackBlobField walks the payloads against one destination field and stops
+// at the first hit. Once an envelope is shown not to authenticate its
+// destination, further payloads only add duplicate findings.
 func (e *Engine) attackBlobField(
 	ctx context.Context,
 	raw string,
@@ -55,14 +55,16 @@ func (e *Engine) attackBlobField(
 			continue
 		}
 
-		expanded := payload.Expand(p, e.canary, trusted)
+		expanded := payload.Expand(p, e.canary, trusted, field.Value)
 
 		probed, err := b.Replace(raw, field, expanded)
 		if err != nil {
 			continue
 		}
 
-		altProbed, err := b.Replace(raw, field, payload.Expand(p, AltCanary(e.canary), trusted))
+		alt := payload.Expand(p, AltCanary(e.canary), trusted, field.Value)
+
+		altProbed, err := b.Replace(raw, field, alt)
 		if err != nil {
 			continue
 		}

@@ -45,7 +45,7 @@ func TestExpand(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := payload.Expand(payload.Payload{Template: tt.tmpl}, tt.canary, tt.target)
+			got := payload.Expand(payload.Payload{Template: tt.tmpl}, tt.canary, tt.target, "")
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -75,7 +75,7 @@ func TestBuiltInExpands(t *testing.T) {
 		require.NotEmpty(t, p.Template)
 		require.NotEmpty(t, p.Mechanism)
 
-		got := payload.Expand(p, "canary.invalid", "allowed.lab")
+		got := payload.Expand(p, "canary.invalid", "allowed.lab", "")
 		assert.NotContains(t, got, "{{canary}}")
 		assert.NotContains(t, got, "{{target}}")
 		assert.NotEmpty(t, got)
@@ -105,6 +105,6 @@ func FuzzExpand(f *testing.F) {
 	f.Add("{{canary}}{{canary}}", "c", "t")
 
 	f.Fuzz(func(_ *testing.T, tmpl, canary, target string) {
-		_ = payload.Expand(payload.Payload{Template: tmpl}, canary, target)
+		_ = payload.Expand(payload.Payload{Template: tmpl}, canary, target, "")
 	})
 }

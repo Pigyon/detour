@@ -12,6 +12,13 @@ const (
 
 	tokenCanary = "{{canary}}"
 	tokenTarget = "{{target}}"
+	// tokenValue is the parameter's current value, verbatim.
+	//
+	// A containment allowlist checks for a whole trusted URL, not just its
+	// host, so a payload that only wears the hostname never matches. The value
+	// already in the parameter is the one string the endpoint is known to
+	// accept, which makes it the right thing to carry.
+	tokenValue = "{{value}}"
 
 	mechQuery  = "query"
 	mechCRLF   = "crlf"
@@ -20,6 +27,7 @@ const (
 	techA03 = "OR-A03"
 	techA07 = "OR-A07"
 	techB04 = "OR-B04"
+	techA08 = "OR-A08"
 )
 
 // Payload is one technique-tagged template.
@@ -29,12 +37,18 @@ type Payload struct {
 	Mechanism string
 }
 
-// Expand replaces canary and target tokens in p.Template.
-func Expand(p Payload, canary, target string) string {
+// Expand replaces the canary, target, and value tokens in p.Template.
+func Expand(p Payload, canary, target, value string) string {
 	out := strings.ReplaceAll(p.Template, tokenCanary, canary)
 	out = strings.ReplaceAll(out, tokenTarget, target)
 
-	return out
+	return strings.ReplaceAll(out, tokenValue, value)
+}
+
+// NeedsValue reports whether a payload carries the current parameter value.
+// Such a payload is pointless when there is no value to carry.
+func NeedsValue(p Payload) bool {
+	return strings.Contains(p.Template, tokenValue)
 }
 
 // Substitute replaces keyword with value. An empty keyword is a no-op.
@@ -70,10 +84,13 @@ var builtIn = []Payload{
 	{Technique: techA03, Mechanism: mechQuery, Template: "/\\/" + tokenCanary},
 	{Technique: "OR-A01", Mechanism: mechQuery, Template: "https://" + tokenTarget + "@" + tokenCanary},
 	{Technique: "OR-A01", Mechanism: mechQuery, Template: "https://" + tokenTarget + "%40" + tokenCanary},
-	{Technique: "OR-A08", Mechanism: mechQuery, Template: "https://" + tokenCanary + "/" + tokenTarget},
+	{Technique: techA08, Mechanism: mechQuery, Template: "https://" + tokenCanary + "/" + tokenTarget},
 	{Technique: "OR-A09", Mechanism: mechQuery, Template: "https://" + tokenTarget + "." + tokenCanary},
-	{Technique: "OR-A08", Mechanism: mechQuery, Template: "https://" + tokenCanary + "?" + tokenTarget},
-	{Technique: "OR-A08", Mechanism: mechQuery, Template: "https://" + tokenCanary + "#" + tokenTarget},
+	{Technique: techA08, Mechanism: mechQuery, Template: "https://" + tokenCanary + "?" + tokenTarget},
+	{Technique: techA08, Mechanism: mechQuery, Template: "https://" + tokenCanary + "/?x=" + tokenValue},
+	{Technique: techA08, Mechanism: mechQuery, Template: "https://" + tokenCanary + "/#" + tokenValue},
+	{Technique: "OR-A01", Mechanism: mechQuery, Template: tokenValue + "@" + tokenCanary},
+	{Technique: techA08, Mechanism: mechQuery, Template: "https://" + tokenCanary + "#" + tokenTarget},
 	{Technique: "OR-A06", Mechanism: mechQuery, Template: "%09//" + tokenCanary},
 	{Technique: "OR-A12", Mechanism: mechQuery, Template: "%00//" + tokenCanary},
 	{Technique: "OR-A06", Mechanism: mechQuery, Template: "%20//" + tokenCanary},

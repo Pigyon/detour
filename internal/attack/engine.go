@@ -205,8 +205,8 @@ func (e *Engine) attackKeyword(ctx context.Context, raw string) ([]model.Finding
 			continue
 		}
 
-		expanded := payload.Expand(p, e.canary, hostOf(raw))
-		altExpanded := payload.Expand(p, AltCanary(e.canary), hostOf(raw))
+		expanded := payload.Expand(p, e.canary, hostOf(raw), "")
+		altExpanded := payload.Expand(p, AltCanary(e.canary), hostOf(raw), "")
 		probed := payload.Substitute(raw, e.keyword, expanded)
 		altProbed := payload.Substitute(raw, e.keyword, altExpanded)
 
@@ -239,8 +239,13 @@ func (e *Engine) attackParams(ctx context.Context, parsed *url.URL, p payload.Pa
 			continue
 		}
 
-		trusted := trustedHost(parsed, query.Get(actual))
-		expanded := payload.Expand(p, e.canary, trusted)
+		current := query.Get(actual)
+		if payload.NeedsValue(p) && current == "" {
+			continue
+		}
+
+		trusted := trustedHost(parsed, current)
+		expanded := payload.Expand(p, e.canary, trusted, current)
 
 		key := actual + "\x00" + expanded
 		if _, dup := seen[key]; dup {
@@ -253,7 +258,7 @@ func (e *Engine) attackParams(ctx context.Context, parsed *url.URL, p payload.Pa
 		q.Set(actual, expanded)
 		next.RawQuery = q.Encode()
 
-		altExpanded := payload.Expand(p, AltCanary(e.canary), trusted)
+		altExpanded := payload.Expand(p, AltCanary(e.canary), trusted, current)
 		altNext := cloneURL(parsed)
 		altQ := altNext.Query()
 		altQ.Set(actual, altExpanded)
@@ -278,8 +283,8 @@ func (e *Engine) attackParams(ctx context.Context, parsed *url.URL, p payload.Pa
 }
 
 func (e *Engine) probeHeader(ctx context.Context, raw string, p payload.Payload) (model.Finding, bool, error) {
-	expanded := payload.Expand(p, e.canary, hostOf(raw))
-	altExpanded := payload.Expand(p, AltCanary(e.canary), hostOf(raw))
+	expanded := payload.Expand(p, e.canary, hostOf(raw), "")
+	altExpanded := payload.Expand(p, AltCanary(e.canary), hostOf(raw), "")
 	headers := http.Header{}
 	headers.Set("X-Forwarded-Host", expanded)
 	headers.Set("X-Host", expanded)
@@ -300,8 +305,8 @@ func (e *Engine) probeHeader(ctx context.Context, raw string, p payload.Payload)
 }
 
 func (e *Engine) probeCRLF(ctx context.Context, raw string, p payload.Payload) (model.Finding, bool, error) {
-	expanded := payload.Expand(p, e.canary, hostOf(raw))
-	altExpanded := payload.Expand(p, AltCanary(e.canary), hostOf(raw))
+	expanded := payload.Expand(p, e.canary, hostOf(raw), "")
+	altExpanded := payload.Expand(p, AltCanary(e.canary), hostOf(raw), "")
 	probed := joinPath(raw, expanded)
 	altProbed := joinPath(raw, altExpanded)
 
