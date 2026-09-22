@@ -152,7 +152,7 @@ func looksJSONL(data []byte) bool {
 }
 
 func firstNonEmptyLine(data []byte) string {
-	for _, raw := range bytes.Split(data, []byte("\n")) {
+	for raw := range bytes.SplitSeq(data, []byte("\n")) {
 		line := strings.TrimSpace(string(raw))
 		if line != "" && !strings.HasPrefix(line, "#") {
 			return line

@@ -103,7 +103,7 @@ func TestJSCommandFindingsAreCandidates(t *testing.T) {
 	out, _ := runJSCmd(t, jsArgs(path, "--findings"))
 	require.NotEmpty(t, strings.TrimSpace(out))
 
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		var finding map[string]any
 
 		require.NoError(t, json.Unmarshal([]byte(line), &finding))

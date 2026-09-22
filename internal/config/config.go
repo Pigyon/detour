@@ -79,8 +79,9 @@ func LoadFile(v *viper.Viper, cfgFile string) error {
 	}
 
 	if err := v.ReadInConfig(); err != nil {
-		var notFound viper.ConfigFileNotFoundError
-		if !errors.As(err, &notFound) {
+		// A missing config file is the normal case: every setting has a
+		// default and flags and env override anyway.
+		if _, missing := errors.AsType[viper.ConfigFileNotFoundError](err); !missing {
 			return fmt.Errorf("reading config: %w", err)
 		}
 	}

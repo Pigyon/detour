@@ -23,8 +23,7 @@ func run() int {
 	if err := cli.Execute(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 
-		var exitErr *cli.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*cli.ExitError](err); ok {
 			return exitErr.Code
 		}
 

@@ -53,8 +53,7 @@ func DanglingHosts(ctx context.Context, r HostResolver, hosts []string) []string
 // isNotFound distinguishes "this name does not exist" from "the lookup did not
 // finish".
 func isNotFound(err error) bool {
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) {
+	if dnsErr, ok := errors.AsType[*net.DNSError](err); ok {
 		return dnsErr.IsNotFound
 	}
 

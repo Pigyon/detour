@@ -180,7 +180,7 @@ func decodeSelected(t *testing.T, out string) []selectedEntry {
 
 	entries := []selectedEntry{}
 
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
