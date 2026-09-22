@@ -132,3 +132,45 @@ func jwtProbe(t *testing.T, base string) string {
 
 	return base + "/b03?token=" + token
 }
+
+// TestAttackNeutralizesBoundEnvelope is the regression for a real miss.
+//
+// The wrapper binds its destination to the message id, so rewriting only the
+// destination returns 400 and a scanner that stops there reports the endpoint
+// clean. It is not clean: zeroing the per-message fields removes the binding.
+// detour has to try both, and say which one worked.
+func TestAttackNeutralizesBoundEnvelope(t *testing.T) {
+	t.Parallel()
+
+	eng, srv := newEngine(t)
+
+	blob, err := lab.EncodeBoundClick("https://" + lab.AllowedHost + "/campaign")
+	require.NoError(t, err)
+
+	findings, err := eng.Run(context.Background(), []string{srv.URL + "/track/click3/" + blob + ".html"})
+	require.NoError(t, err)
+
+	got, ok := findingByTechnique(findings, "OR-B01")
+	require.True(t, ok, "the bound envelope must still be caught")
+	assert.Contains(t, got.Evidence, "blob_strategy=neutralized-envelope",
+		"the report has to name the mutation that worked")
+}
+
+// TestPreservedEnvelopePreferred keeps the stronger finding first: when a
+// surgical swap works, that is what gets reported, because every other byte is
+// the vendor's own.
+func TestPreservedEnvelopePreferred(t *testing.T) {
+	t.Parallel()
+
+	eng, srv := newEngine(t)
+
+	blob, err := lab.EncodeClick("https://" + lab.AllowedHost + "/home")
+	require.NoError(t, err)
+
+	findings, err := eng.Run(context.Background(), []string{srv.URL + "/track/click2/" + blob + ".html"})
+	require.NoError(t, err)
+
+	got, ok := findingByTechnique(findings, "OR-B01")
+	require.True(t, ok)
+	assert.Contains(t, got.Evidence, "blob_strategy=preserved-envelope")
+}

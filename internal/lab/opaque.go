@@ -33,6 +33,7 @@ func registerOpaqueDestinations(mux *http.ServeMux) {
 	mux.HandleFunc("GET /b04", handleDoubleDecode)
 	mux.HandleFunc("GET /b05", handleChainOuter)
 	mux.HandleFunc("GET /b05/inner", handleChainInner)
+	mux.HandleFunc("GET /track/click3/{blob}", handleBoundClick)
 }
 
 func handleClick(w http.ResponseWriter, r *http.Request) {
@@ -342,4 +343,100 @@ func EncodeJWT(dest string) (string, error) {
 	enc := base64.RawURLEncoding
 
 	return enc.EncodeToString(header) + "." + enc.EncodeToString(claims) + "." + labJWTSignature, nil
+}
+
+// registeredDest is the destination the bound-envelope fixture has on file for
+// a real message id.
+const registeredDest = "https://" + AllowedHost + "/campaign"
+
+// handleBoundClick models the wrapper that rejects a surgical destination swap
+// but still accepts a wholly synthetic envelope.
+//
+// This is the shape that made detour report a live target clean: rewriting
+// only the destination returns 400, because the destination is bound to the
+// message id, and a scanner that stops there calls the endpoint safe. Zeroing
+// the per-message fields removes the binding and the redirect is open again.
+func handleBoundClick(w http.ResponseWriter, r *http.Request) {
+	env, err := DecodeClick(r.PathValue("blob"))
+	if err != nil {
+		reject(w, "invalid blob")
+
+		return
+	}
+
+	if env.Host != clickHost || env.Campaign != clickCampaign {
+		reject(w, "envelope rejected")
+
+		return
+	}
+
+	// A real message id binds the destination. A zeroed one does not, which is
+	// the bug.
+	if env.Integrity != strings.Repeat("0", len(env.Integrity)) && env.Dest != registeredDest {
+		reject(w, "destination does not match the registered message")
+
+		return
+	}
+
+	found(w, env.Dest)
+}
+
+// EncodeBoundClick builds a click blob that looks like a real send: a genuine
+// integrity digest and message id rather than the zeroed ones a forged
+// envelope carries.
+func EncodeBoundClick(dest string) (string, error) {
+	blob, err := EncodeClick(dest)
+	if err != nil {
+		return "", err
+	}
+
+	raw, err := decodeBlobBytes(blob)
+	if err != nil {
+		return "", err
+	}
+
+	zr, err := zlib.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		return "", fmt.Errorf("zlib: %w", err)
+	}
+
+	defer func() { _ = zr.Close() }()
+
+	body, err := io.ReadAll(io.LimitReader(zr, maxBlobBytes))
+	if err != nil {
+		return "", fmt.Errorf("reading zlib: %w", err)
+	}
+
+	var fields []any
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return "", fmt.Errorf("json: %w", err)
+	}
+
+	fields[2] = "1768475699654_106519_6005_6307.sc-10_43_5_195-inbound0$user@example.org"
+	fields[10] = "18e5c58e1a8f3d7bedbde45f50ebff1e"
+	fields[14] = map[string]any{"messageId": "6968cc33917aea0007870e85"}
+
+	return reencodeClick(fields)
+}
+
+func reencodeClick(fields []any) (string, error) {
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		return "", fmt.Errorf("marshaling click envelope: %w", err)
+	}
+
+	var buf bytes.Buffer
+
+	zw := zlib.NewWriter(&buf)
+	if _, err := zw.Write(raw); err != nil {
+		_ = zw.Close()
+
+		return "", fmt.Errorf("compressing click envelope: %w", err)
+	}
+
+	if err := zw.Close(); err != nil {
+		return "", fmt.Errorf("closing zlib writer: %w", err)
+	}
+
+	return base64.URLEncoding.EncodeToString(buf.Bytes()), nil
 }

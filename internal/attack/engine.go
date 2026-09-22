@@ -14,6 +14,7 @@ import (
 	"github.com/nedlir/detour/internal/checkpoint"
 	"github.com/nedlir/detour/internal/client"
 	"github.com/nedlir/detour/internal/corpus"
+	"github.com/nedlir/detour/internal/decode"
 	"github.com/nedlir/detour/internal/model"
 	"github.com/nedlir/detour/internal/payload"
 	"github.com/nedlir/detour/internal/pool"
@@ -71,6 +72,7 @@ type blobContext struct {
 	chain     []model.Decoder
 	fields    []model.FieldPath
 	field     model.FieldPath
+	strategy  decode.Strategy
 }
 
 // Engine probes candidates with the built-in payload set.
@@ -485,7 +487,10 @@ func (e *Engine) finding(pr probe, pair resolve.Pair, found dest, status int) mo
 	}
 
 	if pr.blob != nil {
-		f.Evidence = append(f.Evidence, "blob_field="+string(pr.blob.field))
+		f.Evidence = append(f.Evidence,
+			"blob_field="+string(pr.blob.field),
+			"blob_strategy="+string(pr.blob.strategy),
+		)
 	}
 
 	f.Repro = "curl -sI " + pr.probed

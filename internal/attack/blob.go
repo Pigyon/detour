@@ -38,6 +38,19 @@ func (e *Engine) attackBlobs(ctx context.Context, raw string) ([]model.Finding, 
 	return hits, nil
 }
 
+// blobStrategies are tried in order of how strong a report they make.
+//
+// A preserved envelope is the better finding, so it goes first: every byte
+// except the destination is the vendor's own. The neutralized envelope is the
+// fallback, and it matters because a wrapper that binds the destination to a
+// per-message value rejects a surgical swap while still accepting a wholly
+// synthetic envelope. Stopping at the first strategy would call that target
+// clean.
+var blobStrategies = []decode.Strategy{
+	decode.StrategyPreserved,
+	decode.StrategyNeutralized,
+}
+
 // attackBlobField walks the payloads against one destination field and stops
 // at the first hit. Once an envelope is shown not to authenticate its
 // destination, further payloads only add duplicate findings.
@@ -47,7 +60,29 @@ func (e *Engine) attackBlobField(
 	b decode.Blob,
 	field decode.URLField,
 ) (model.Finding, bool, error) {
+	for _, strategy := range blobStrategies {
+		f, ok, err := e.attackBlobStrategy(ctx, raw, b, field, strategy)
+		if err != nil {
+			return model.Finding{}, false, err
+		}
+
+		if ok {
+			return f, true, nil
+		}
+	}
+
+	return model.Finding{}, false, nil
+}
+
+func (e *Engine) attackBlobStrategy(
+	ctx context.Context,
+	raw string,
+	b decode.Blob,
+	field decode.URLField,
+	strategy decode.Strategy,
+) (model.Finding, bool, error) {
 	ctxBlob := blobContextFor(b, field)
+	ctxBlob.strategy = strategy
 	trusted := hostOfField(field, raw)
 
 	for _, p := range e.payloads {
@@ -57,14 +92,14 @@ func (e *Engine) attackBlobField(
 
 		expanded := payload.Expand(p, e.canary, trusted, field.Value)
 
-		probed, err := b.Replace(raw, field, expanded)
+		probed, err := b.ReplaceStrategy(raw, field, expanded, strategy)
 		if err != nil {
 			continue
 		}
 
 		alt := payload.Expand(p, AltCanary(e.canary), trusted, field.Value)
 
-		altProbed, err := b.Replace(raw, field, alt)
+		altProbed, err := b.ReplaceStrategy(raw, field, alt, strategy)
 		if err != nil {
 			continue
 		}

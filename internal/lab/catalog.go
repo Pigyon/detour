@@ -63,6 +63,7 @@ var catalog = []Endpoint{
 	{ID: "OR-A14", Path: "/a14", Probe: "/a14", Param: paramURL, Kind: KindVuln, Description: "literal http(s):// blocklist; malformed scheme"},
 	{ID: "OR-A15", Path: "/a15", Probe: "/a15", Param: paramURL, Kind: KindVuln, Description: "string blocklist of loopback dotted-quads"},
 	{ID: "OR-B01", Path: "/track/click2/{blob}", Probe: "/track/click2/invalid.html", Kind: KindVuln, Description: "EngageLab-style base64url(zlib(json)) click wrapper"},
+	{Path: "/track/click3/{blob}", Probe: "/track/click3/invalid.html", Kind: KindVuln, Covers: []string{"OR-B01"}, Description: "click wrapper whose destination is bound to a real message id but not to a synthetic one"},
 	{ID: "OR-B02", Path: "/ls/click", Probe: "/ls/click", Param: "upn", Kind: KindVuln, Description: "SendGrid-style unsigned ct wrapper"},
 	{ID: "OR-B03", Path: "/b03", Probe: "/b03", Param: "token", Kind: KindVuln, Description: "JWT claim destination, signature ignored"},
 	{ID: "OR-B04", Path: "/b04", Probe: "/b04", Param: "next", Kind: KindVuln, Description: "validator decodes once; sink decodes twice"},
