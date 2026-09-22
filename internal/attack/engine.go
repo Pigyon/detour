@@ -20,11 +20,29 @@ import (
 )
 
 const (
-	mechHeader = "header"
-	mechCRLF   = "crlf"
-	mechBlob   = "blob"
-	mechQuery  = "query"
+	mechHeader  = "header"
+	mechCRLF    = "crlf"
+	mechBlob    = "blob"
+	mechQuery   = "query"
+	mechMeta    = "meta"
+	mechRefresh = "refresh"
+
+	// maxBodyScan is how much of a response body is read looking for a meta
+	// refresh. The tag lives in the head, so this is generous.
+	maxBodyScan = 1 << 20
 )
+
+// dest is one candidate destination and how the response conveyed it.
+//
+// The mechanism matters as much as the URL. A destination that arrived in a
+// Refresh header is OR-D06 and one scraped from a meta tag is OR-C04,
+// whichever payload happened to be in flight, and labelling both as whatever
+// string got there loses the technique.
+type dest struct {
+	url       string
+	mechanism string
+	technique string
+}
 
 var redirectParams = []string{
 	"url", "next", "redirect", "redirect_uri", "return", "returnurl", "return_to",
@@ -304,12 +322,12 @@ func (e *Engine) confirm(ctx context.Context, pr probe) (model.Finding, bool, er
 		return model.Finding{}, false, nil
 	}
 
-	pair, dest, status, err := e.readDest(ctx, pr.probed, pr.extra, e.canary)
+	pair, found, status, err := e.readDest(ctx, pr.probed, pr.extra, e.canary)
 	if err != nil {
 		return model.Finding{}, false, err
 	}
 
-	hit := dest != "" && resolve.HitsCanary(pair, e.canary)
+	hit := found.url != "" && resolve.HitsCanary(pair, e.canary)
 	if hit {
 		altPair, _, _, err := e.readDest(ctx, pr.altProbed, pr.altExtra, AltCanary(e.canary))
 		if err != nil {
@@ -327,7 +345,7 @@ func (e *Engine) confirm(ctx context.Context, pr probe) (model.Finding, bool, er
 		return model.Finding{}, false, nil
 	}
 
-	return e.finding(pr, pair, dest, status), true, nil
+	return e.finding(pr, pair, found, status), true, nil
 }
 
 // techniqueID prefers the envelope class the decoder identified over the
@@ -349,10 +367,10 @@ func (pr probe) mechanism() string {
 	return pr.payload.Mechanism
 }
 
-func (e *Engine) readDest(ctx context.Context, raw string, extra http.Header, canary string) (resolve.Pair, string, int, error) {
+func (e *Engine) readDest(ctx context.Context, raw string, extra http.Header, canary string) (resolve.Pair, dest, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
-		return resolve.Pair{}, "", 0, fmt.Errorf("building request: %w", err)
+		return resolve.Pair{}, dest{}, 0, fmt.Errorf("building request: %w", err)
 	}
 
 	for name, values := range extra {
@@ -363,56 +381,67 @@ func (e *Engine) readDest(ctx context.Context, raw string, extra http.Header, ca
 
 	resp, err := e.client.Do(ctx, req)
 	if err != nil {
-		return resolve.Pair{}, "", 0, nil
+		return resolve.Pair{}, dest{}, 0, nil
 	}
 
 	defer func() { _ = resp.Body.Close() }()
 
-	dests := destValues(resp)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyScan))
 
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
-
-	if pair, dest, ok := pickCanaryDest(raw, dests, canary); ok {
-		return pair, dest, resp.StatusCode, nil
+	if pair, found, ok := pickCanaryDest(raw, destValues(resp, body), canary); ok {
+		return pair, found, resp.StatusCode, nil
 	}
 
-	return resolve.Pair{}, "", resp.StatusCode, nil
+	return resolve.Pair{}, dest{}, resp.StatusCode, nil
 }
 
-func destValues(resp *http.Response) []string {
-	dests := append([]string{}, resp.Header.Values("Location")...)
+// destValues gathers every way this response could send a browser somewhere.
+func destValues(resp *http.Response, body []byte) []dest {
+	out := []dest{}
 
+	for _, loc := range resp.Header.Values("Location") {
+		out = append(out, dest{url: loc})
+	}
+
+	// Raw bytes catch a second Location smuggled in by CRLF injection, which
+	// net/http folds away.
 	if raw, err := httputil.DumpResponse(resp, false); err == nil {
-		dests = append(dests, resolve.LocationsFromRaw(raw)...)
+		for _, loc := range resolve.LocationsFromRaw(raw) {
+			out = append(out, dest{url: loc})
+		}
 	}
 
 	if u, ok := resolve.ParseRefresh(resp.Header.Get("Refresh")); ok {
-		dests = append(dests, u)
+		out = append(out, dest{url: u, mechanism: mechRefresh, technique: "OR-D06"})
 	}
 
-	return dests
+	if u, ok := resolve.MetaRefresh(body); ok {
+		out = append(out, dest{url: u, mechanism: mechMeta, technique: "OR-C04"})
+	}
+
+	return out
 }
 
-func pickCanaryDest(base string, dests []string, canary string) (resolve.Pair, string, bool) {
-	for _, dest := range dests {
-		if dest == "" {
+func pickCanaryDest(base string, dests []dest, canary string) (resolve.Pair, dest, bool) {
+	for _, candidate := range dests {
+		if candidate.url == "" {
 			continue
 		}
 
-		pair, err := resolve.Interpret(base, dest)
+		pair, err := resolve.Interpret(base, candidate.url)
 		if err != nil {
 			continue
 		}
 
 		if resolve.HitsCanary(pair, canary) {
-			return pair, dest, true
+			return pair, candidate, true
 		}
 	}
 
-	return resolve.Pair{}, "", false
+	return resolve.Pair{}, dest{}, false
 }
 
-func (e *Engine) finding(pr probe, pair resolve.Pair, dest string, status int) model.Finding {
+func (e *Engine) finding(pr probe, pair resolve.Pair, found dest, status int) model.Finding {
 	cand := model.NewNavigationCandidate(pr.source, pr.representation())
 	cand.ParamName = pr.param
 
@@ -425,6 +454,14 @@ func (e *Engine) finding(pr probe, pair resolve.Pair, dest string, status int) m
 	f.TechniqueID = pr.techniqueID()
 	f.Mechanism = pr.mechanism()
 	f.Payload = pr.expanded
+
+	// How the response actually carried the destination outranks how the
+	// payload was delivered.
+	if found.technique != "" {
+		f.TechniqueID = found.technique
+		f.Mechanism = found.mechanism
+	}
+
 	f.Candidate = cand
 	f.Capabilities.RedirectExternal = true
 	f.Capabilities.InputControlled = true
@@ -438,7 +475,7 @@ func (e *Engine) finding(pr probe, pair resolve.Pair, dest string, status int) m
 	f.Candidate.Capabilities = f.Capabilities
 	f.Evidence = []string{
 		fmt.Sprintf("status %d", status),
-		"Location: " + dest,
+		destEvidence(found),
 		"rfc_host=" + pair.RFC.Host,
 		"browser_host=" + pair.Browser.Host,
 	}
@@ -453,6 +490,15 @@ func (e *Engine) finding(pr probe, pair resolve.Pair, dest string, status int) m
 	return f
 }
 
+// destEvidence labels the evidence line with how the destination arrived.
+func destEvidence(found dest) string {
+	if found.mechanism == "" {
+		return "Location: " + found.url
+	}
+
+	return found.mechanism + ": " + found.url
+}
+
 // representation names how the candidate carried the destination.
 func (pr probe) representation() model.Representation {
 	switch pr.mechanism() {
@@ -462,6 +508,8 @@ func (pr probe) representation() model.Representation {
 		return model.RepresentationPathSegment
 	case mechBlob:
 		return model.RepresentationOpaqueBlob
+	case mechMeta, mechRefresh:
+		return model.RepresentationQueryParameter
 	default:
 		return model.RepresentationQueryParameter
 	}

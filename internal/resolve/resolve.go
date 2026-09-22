@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
@@ -317,4 +318,30 @@ func splitHeaderLines(head []byte) [][]byte {
 	}
 
 	return bytes.Split(head, []byte("\n"))
+}
+
+// metaRefresh matches a meta refresh directive in a response body. The browser
+// navigates on it while the status stays 200, so a header-only scanner records
+// a miss.
+var metaRefresh = regexp.MustCompile(
+	`(?is)<meta[^>]+http-equiv\s*=\s*["']?refresh["']?[^>]*content\s*=\s*["']([^"']+)["']`)
+
+// metaRefreshReversed handles the attribute order the other way round.
+var metaRefreshReversed = regexp.MustCompile(
+	`(?is)<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]*http-equiv\s*=\s*["']?refresh["']?`)
+
+// MetaRefresh extracts the destination from a meta refresh tag in body.
+func MetaRefresh(body []byte) (string, bool) {
+	for _, re := range []*regexp.Regexp{metaRefresh, metaRefreshReversed} {
+		match := re.FindSubmatch(body)
+		if match == nil {
+			continue
+		}
+
+		if dest, ok := ParseRefresh(string(match[1])); ok {
+			return dest, true
+		}
+	}
+
+	return "", false
 }
