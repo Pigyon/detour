@@ -19,6 +19,7 @@ const (
 	fileJSONL = "findings.jsonl"
 	fileJSON  = "findings.json"
 	fileMD    = "report.md"
+	fileSARIF = "report.sarif"
 	dirPerm   = 0o750
 	filePerm  = 0o600
 )
@@ -42,7 +43,7 @@ func ParseFilter(raw string) (map[string]struct{}, error) {
 
 	allow := map[string]struct{}{}
 
-	for _, part := range strings.Split(raw, ",") {
+	for part := range strings.SplitSeq(raw, ",") {
 		mech := strings.ToLower(strings.TrimSpace(part))
 		if mech == "" {
 			continue
@@ -79,8 +80,18 @@ func Apply(findings []model.Finding, allow map[string]struct{}) []model.Finding 
 	return out
 }
 
-// Write dumps findings.jsonl, findings.json, and report.md under dir.
+// Write dumps the report set under dir.
+//
+// findings.jsonl is the source of truth and is written exactly as the run
+// produced it. The json, markdown, and sarif files are projections of it, and
+// the last three dedupe by root cause because a reader wants defects, not
+// demonstrations.
 func Write(dir string, findings []model.Finding) error {
+	return WriteVersion(dir, findings, "dev")
+}
+
+// WriteVersion is Write with the tool version recorded in the SARIF log.
+func WriteVersion(dir string, findings []model.Finding, version string) error {
 	if dir == "" {
 		return errors.New("empty report directory")
 	}
@@ -93,15 +104,26 @@ func Write(dir string, findings []model.Finding) error {
 		return err
 	}
 
-	if err := writeJSON(filepath.Join(dir, fileJSON), findings); err != nil {
+	unique := Dedupe(findings)
+
+	if err := writeJSON(filepath.Join(dir, fileJSON), unique); err != nil {
 		return err
 	}
 
-	if err := writeMarkdown(filepath.Join(dir, fileMD), findings); err != nil {
+	if err := writeMarkdown(filepath.Join(dir, fileMD), unique); err != nil {
 		return err
 	}
 
-	return nil
+	return writeSARIF(filepath.Join(dir, fileSARIF), unique, version)
+}
+
+func writeSARIF(path string, findings []model.Finding, version string) error {
+	raw, err := SARIF(findings, version)
+	if err != nil {
+		return err
+	}
+
+	return writeFile(path, raw)
 }
 
 func writeJSONL(path string, findings []model.Finding) error {
@@ -137,17 +159,46 @@ func writeMarkdown(path string, findings []model.Finding) error {
 
 	b.WriteString("# detour findings\n\n")
 
-	if _, err := fmt.Fprintf(&b, "%d confirmed.\n", len(findings)); err != nil {
+	scored := ScoreAll(findings)
+
+	if _, err := fmt.Fprintf(&b, "%d distinct root causes, highest severity first.\n", len(scored)); err != nil {
 		return fmt.Errorf("writing report heading: %w", err)
 	}
 
-	for _, f := range findings {
-		if err := writeFindingMarkdown(&b, f); err != nil {
+	for _, s := range scored {
+		if err := writeScoredMarkdown(&b, s); err != nil {
 			return err
 		}
 	}
 
 	return writeFile(path, []byte(b.String()))
+}
+
+func writeScoredMarkdown(b *strings.Builder, s Scored) error {
+	if _, err := fmt.Fprintf(b, "\n## %s: %s\n\n", heading(s.Finding), techniqueTitle(s.TechniqueID)); err != nil {
+		return fmt.Errorf("writing finding heading: %w", err)
+	}
+
+	if _, err := fmt.Fprintf(b, "- suggested severity: **%s** (%.1f, derived from capabilities, not asserted)\n",
+		s.Score.Severity, s.Score.Base); err != nil {
+		return fmt.Errorf("writing severity: %w", err)
+	}
+
+	if _, err := fmt.Fprintf(b, "- cvss 3.1: `%s`\n- cvss 4.0: `%s`\n", s.Score.CVSS31, s.Score.CVSS40); err != nil {
+		return fmt.Errorf("writing vectors: %w", err)
+	}
+
+	if err := writeFindingMarkdown(b, s.Finding); err != nil {
+		return err
+	}
+
+	if _, err := fmt.Fprintf(b, "- root cause: `%s`\n", RootCause(s.Finding)); err != nil {
+		return fmt.Errorf("writing root cause: %w", err)
+	}
+
+	_, err := fmt.Fprintf(b, "- remediation: %s\n", Remediation(s.TechniqueID))
+
+	return err
 }
 
 func writeFindingMarkdown(b *strings.Builder, f model.Finding) error {
@@ -204,7 +255,9 @@ func heading(f model.Finding) string {
 }
 
 func capabilityList(c model.CapabilitySet) []string {
-	names := make([]string, 0, 8)
+	names := make([]string, 0, 16)
+
+	names = append(names, escalateNames(c)...)
 
 	if c.RedirectExternal {
 		names = append(names, "redirect.external")
@@ -228,10 +281,6 @@ func capabilityList(c model.CapabilitySet) []string {
 
 	if c.RefererLeak {
 		names = append(names, "referer_leak")
-	}
-
-	if c.OAuthRedirectURI {
-		names = append(names, "oauth.redirect_uri")
 	}
 
 	if c.HopCount > 0 {
@@ -281,4 +330,31 @@ func DecodeJSONL(raw []byte) ([]model.Finding, error) {
 
 		out = append(out, f)
 	}
+}
+
+// escalateNames lists the escalation capabilities a set carries. It mirrors
+// the escalate package's own list, kept here so report does not depend on it.
+func escalateNames(c model.CapabilitySet) []string {
+	out := []string{}
+
+	for _, entry := range []struct {
+		on   bool
+		name string
+	}{
+		{c.OAuthRedirectURI, "oauth.redirect_uri"},
+		{c.PostLogoutRedirect, "oidc.post_logout_redirect_uri"},
+		{c.SAMLRelayState, "saml.relaystate"},
+		{c.DataScheme, "data_scheme"},
+		{c.CSPBypass, "csp_bypass"},
+		{c.CSRFReferer, "csrf.referer_bypass"},
+		{c.CachePoisoned, "cache_poisoned"},
+		{c.CrossProtocol, "cross_protocol"},
+		{c.PhishingVector, "phishing_vector"},
+	} {
+		if entry.on {
+			out = append(out, entry.name)
+		}
+	}
+
+	return out
 }

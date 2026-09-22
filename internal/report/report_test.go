@@ -28,7 +28,7 @@ func TestParseFilter(t *testing.T) {
 	}{
 		{name: "empty", in: "", want: nil},
 		{name: "one", in: mechHeader, want: []string{mechHeader}},
-		{name: "list", in: mechHeader + ", crlf,query", want: []string{"crlf", mechHeader, "query"}},
+		{name: "list", in: mechHeader + ", crlf,query", want: []string{"crlf", mechHeader, mechQuery}},
 		{name: "unknown", in: mechHeader + ",nope", wantErr: true},
 		{name: "commas only", in: ",,", wantErr: true},
 	}
@@ -66,7 +66,7 @@ func TestApply(t *testing.T) {
 	t.Parallel()
 
 	findings := []model.Finding{
-		{TechniqueID: techA01, Mechanism: "query"},
+		{TechniqueID: techA01, Mechanism: mechQuery},
 		{TechniqueID: "OR-D01", Mechanism: mechHeader},
 		{TechniqueID: "OR-A11", Mechanism: "crlf"},
 	}
@@ -88,7 +88,7 @@ func TestWrite(t *testing.T) {
 	dir := t.TempDir()
 	f := model.NewFinding()
 	f.TechniqueID = techA01
-	f.Mechanism = "query"
+	f.Mechanism = mechQuery
 	f.Payload = "https://canary.invalid"
 	f.Repro = "curl -sI https://app.example/a"
 	f.Candidate.SourceURL = "https://app.example/a?url=https://allowed.lab/"
