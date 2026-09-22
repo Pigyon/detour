@@ -38,6 +38,23 @@ var redirectParams = map[string]struct{}{
 	"service": {}, "ref": {}, "referrer": {}, "domain": {}, "host": {},
 }
 
+// RedirectParams returns the canonical redirect-shaped parameter names,
+// sorted.
+//
+// This is the single list. The classifier decides what is worth attacking and
+// the attack engine decides what to probe, and when those two disagree the
+// engine silently skips endpoints selection just flagged.
+func RedirectParams() []string {
+	out := make([]string, 0, len(redirectParams))
+	for name := range redirectParams {
+		out = append(out, name)
+	}
+
+	sort.Strings(out)
+
+	return out
+}
+
 // Entry is one classified injection point.
 type Entry struct {
 	URL string `json:"url"`
@@ -150,7 +167,7 @@ func looksLikeDestination(value string) bool {
 // hasOpaqueSegment reuses the decoder's own detector, so the classifier and
 // the decoder agree on what counts as encoded state.
 func hasOpaqueSegment(parsed *url.URL) bool {
-	for _, segment := range strings.Split(parsed.EscapedPath(), "/") {
+	for segment := range strings.SplitSeq(parsed.EscapedPath(), "/") {
 		token, err := url.PathUnescape(segment)
 		if err != nil {
 			continue

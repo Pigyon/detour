@@ -13,6 +13,7 @@ import (
 
 	"github.com/nedlir/detour/internal/checkpoint"
 	"github.com/nedlir/detour/internal/client"
+	"github.com/nedlir/detour/internal/corpus"
 	"github.com/nedlir/detour/internal/model"
 	"github.com/nedlir/detour/internal/payload"
 	"github.com/nedlir/detour/internal/pool"
@@ -44,11 +45,9 @@ type dest struct {
 	technique string
 }
 
-var redirectParams = []string{
-	"url", "next", "redirect", "redirect_uri", "return", "returnurl", "return_to",
-	"back", "backurl", "dest", "destination", "goto", "continue", "rurl", "redir",
-	"uri", "target", "to", "out", "forward", "link", "callback", "relaystate",
-}
+// redirectParams is the canonical list, shared with the classifier so the
+// engine never skips a parameter selection just flagged as interesting.
+var redirectParams = corpus.RedirectParams()
 
 // probe is one attack attempt: the request to send, the independent
 // second-canary request that proves input control, and where it came from.
