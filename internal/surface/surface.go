@@ -9,11 +9,14 @@ package surface
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/nedlir/detour/internal/corpus"
+
+	"github.com/nedlir/detour/internal/pool"
 )
 
 // Host is one discovered host and what probing learned about it.
@@ -99,6 +102,15 @@ type Options struct {
 	Prober     Prober
 	// Concurrency bounds resolve and probe work.
 	Concurrency int
+	// Allow decides which discovered hosts may be resolved and probed.
+	//
+	// Enumeration returns whatever the sources hold, which for a large
+	// organization routinely includes hosts outside the engagement. Every
+	// other stage passes through the scope guard before it sends anything;
+	// this one has to as well, or a run resolves and requests names the
+	// operator was never cleared for. A nil Allow permits everything, which is
+	// only correct for a test.
+	Allow func(host string) bool
 }
 
 const defaultConcurrency = 20
@@ -133,7 +145,13 @@ func (m *Mapper) Run(ctx context.Context, domain string) Result {
 		hosts = append(hosts, found...)
 	}
 
-	result.Hosts = m.inspect(ctx, dedupeHosts(hosts), &result)
+	inScope, refused := m.partition(dedupeHosts(hosts))
+	if refused > 0 {
+		result.Errors = append(result.Errors,
+			fmt.Sprintf("surface: %d discovered hosts were out of scope and not contacted", refused))
+	}
+
+	result.Hosts = m.inspect(ctx, inScope, &result)
 
 	sort.Slice(result.Hosts, func(i, j int) bool {
 		if result.Hosts[i].Priority() != result.Hosts[j].Priority() {
@@ -146,40 +164,51 @@ func (m *Mapper) Run(ctx context.Context, domain string) Result {
 	return result
 }
 
+// partition keeps the discovered hosts the scope guard allows.
+func (m *Mapper) partition(hosts []string) (allowed []string, refused int) {
+	if m.opts.Allow == nil {
+		return hosts, 0
+	}
+
+	allowed = make([]string, 0, len(hosts))
+
+	for _, host := range hosts {
+		if m.opts.Allow(host) {
+			allowed = append(allowed, host)
+
+			continue
+		}
+
+		refused++
+	}
+
+	return allowed, refused
+}
+
 // inspect resolves and probes every host, bounded by Concurrency.
+//
+// The bound is on goroutines, not just on work in flight. Spawning one per
+// host and having each wait on a semaphore costs a goroutine stack per host,
+// which on a large organization's subdomain list is hundreds of thousands of
+// them and gigabytes of stacks, for a list subfinder returns routinely.
 func (m *Mapper) inspect(ctx context.Context, hosts []string, result *Result) []Host {
 	var (
 		mu   sync.Mutex
-		wg   sync.WaitGroup
 		out  = make([]Host, 0, len(hosts))
-		sem  = make(chan struct{}, m.opts.Concurrency)
 		errs []string
 	)
 
-	for _, host := range hosts {
-		wg.Add(1)
+	_ = pool.Run(ctx, m.opts.Concurrency, hosts, func(ctx context.Context, host string) error {
+		entry, failures := m.inspectOne(ctx, host)
 
-		go func(host string) {
-			defer wg.Done()
+		mu.Lock()
+		defer mu.Unlock()
 
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				return
-			}
+		out = append(out, entry)
+		errs = append(errs, failures...)
 
-			entry, failures := m.inspectOne(ctx, host)
-
-			mu.Lock()
-			defer mu.Unlock()
-
-			out = append(out, entry)
-			errs = append(errs, failures...)
-		}(host)
-	}
-
-	wg.Wait()
+		return nil
+	})
 
 	result.Errors = append(result.Errors, errs...)
 

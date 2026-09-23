@@ -3,6 +3,9 @@ package surface_test
 import (
 	"context"
 	"errors"
+	"sort"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/nedlir/detour/internal/surface"
@@ -107,4 +110,50 @@ func TestSurfaceWorksWithStagesMissing(t *testing.T) {
 	assert.Equal(t, "a.lab", result.Hosts[0].Host)
 	assert.False(t, result.Hosts[0].Live())
 	assert.Empty(t, result.Origins())
+}
+
+// recordingProber notes every host that was actually contacted.
+type recordingProber struct {
+	mu    sync.Mutex
+	hosts []string
+}
+
+func (r *recordingProber) Probe(_ context.Context, host string) (surface.Host, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.hosts = append(r.hosts, host)
+
+	return surface.Host{Host: host, Status: 200}, nil
+}
+
+func (r *recordingProber) seen() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	out := append([]string(nil), r.hosts...)
+	sort.Strings(out)
+
+	return out
+}
+
+// TestRunRefusesOutOfScopeHosts is the regression for the one stage that sent
+// requests without asking the scope guard. Enumeration returns whatever the
+// sources hold, which for a large organization routinely includes hosts
+// outside the engagement.
+func TestRunRefusesOutOfScopeHosts(t *testing.T) {
+	t.Parallel()
+
+	prober := &recordingProber{}
+
+	mapper := surface.New(surface.Options{
+		Enumerator: stubEnum{hosts: []string{"in.example", "out.other", "also.other"}},
+		Prober:     prober,
+		Allow:      func(host string) bool { return strings.HasSuffix(host, ".example") },
+	})
+
+	result := mapper.Run(context.Background(), "in.example")
+
+	assert.Equal(t, []string{"in.example"}, prober.seen(), "only in-scope hosts may be contacted")
+	assert.Contains(t, strings.Join(result.Errors, " "), "out of scope")
 }
