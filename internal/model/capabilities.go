@@ -39,8 +39,29 @@ func (c CapabilitySet) Clone() CapabilitySet {
 func (c CapabilitySet) Merge(other CapabilitySet) CapabilitySet {
 	out := c
 
-	for _, pair := range out.pairs(&other) {
-		*pair.into = *pair.into || *pair.from
+	// One rule rather than fifteen branches. A capability is never withdrawn
+	// by a merge, so every field is an or.
+	for _, field := range []struct {
+		into *bool
+		from bool
+	}{
+		{&out.RedirectExternal, other.RedirectExternal},
+		{&out.BrowserConfirmed, other.BrowserConfirmed},
+		{&out.InputControlled, other.InputControlled},
+		{&out.JavaScriptScheme, other.JavaScriptScheme},
+		{&out.SSRFChain, other.SSRFChain},
+		{&out.RefererLeak, other.RefererLeak},
+		{&out.OAuthRedirectURI, other.OAuthRedirectURI},
+		{&out.PostLogoutRedirect, other.PostLogoutRedirect},
+		{&out.SAMLRelayState, other.SAMLRelayState},
+		{&out.DataScheme, other.DataScheme},
+		{&out.CSPBypass, other.CSPBypass},
+		{&out.CSRFReferer, other.CSRFReferer},
+		{&out.CachePoisoned, other.CachePoisoned},
+		{&out.CrossProtocol, other.CrossProtocol},
+		{&out.PhishingVector, other.PhishingVector},
+	} {
+		*field.into = *field.into || field.from
 	}
 
 	if other.HopCount > out.HopCount {
@@ -48,26 +69,4 @@ func (c CapabilitySet) Merge(other CapabilitySet) CapabilitySet {
 	}
 
 	return out
-}
-
-// pairs lines up every boolean capability with its counterpart in other, so
-// Merge stays one rule rather than one branch per field.
-func (c *CapabilitySet) pairs(other *CapabilitySet) []struct{ into, from *bool } {
-	return []struct{ into, from *bool }{
-		{&c.RedirectExternal, &other.RedirectExternal},
-		{&c.BrowserConfirmed, &other.BrowserConfirmed},
-		{&c.InputControlled, &other.InputControlled},
-		{&c.JavaScriptScheme, &other.JavaScriptScheme},
-		{&c.SSRFChain, &other.SSRFChain},
-		{&c.RefererLeak, &other.RefererLeak},
-		{&c.OAuthRedirectURI, &other.OAuthRedirectURI},
-		{&c.PostLogoutRedirect, &other.PostLogoutRedirect},
-		{&c.SAMLRelayState, &other.SAMLRelayState},
-		{&c.DataScheme, &other.DataScheme},
-		{&c.CSPBypass, &other.CSPBypass},
-		{&c.CSRFReferer, &other.CSRFReferer},
-		{&c.CachePoisoned, &other.CachePoisoned},
-		{&c.CrossProtocol, &other.CrossProtocol},
-		{&c.PhishingVector, &other.PhishingVector},
-	}
 }

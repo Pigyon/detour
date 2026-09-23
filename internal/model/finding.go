@@ -40,19 +40,6 @@ func (v *Validator) Clone() *Validator {
 	return &out
 }
 
-// Target is a host or URL under test.
-type Target struct {
-	URL  string `json:"url"`
-	Host string `json:"host"`
-}
-
-// Attempt is one payload fired at a candidate.
-type Attempt struct {
-	Candidate NavigationCandidate `json:"candidate"`
-	Payload   string              `json:"payload"`
-	Technique string              `json:"technique"`
-}
-
 // Finding is a capability-scored result. CVSS is derived later, not stored here.
 type Finding struct {
 	SchemaVersion string              `json:"schema_version"`
@@ -68,7 +55,11 @@ type Finding struct {
 	// ProbeURL is the concrete request that produced this finding. The
 	// browser stage replays it, so it must be usable as written.
 	ProbeURL string `json:"probe_url,omitempty"`
-	Verdict  string `json:"verdict,omitempty"`
+	// Artifacts names the files the browser stage wrote for this finding, so
+	// a report can point at the screenshot and HAR that prove it rather than
+	// leaving them in a directory nothing references.
+	Artifacts []string `json:"artifacts,omitempty"`
+	Verdict   string   `json:"verdict,omitempty"`
 }
 
 // NewFinding returns a finding with schema version set and slices initialized.
