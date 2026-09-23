@@ -71,6 +71,19 @@ func runAttack(cmd *cobra.Command, source string, opts attackOptions) error {
 		return errors.New("config not loaded")
 	}
 
+	// The flags that can only be wrong are settled before anything is sent. A
+	// misspelled mechanism used to be caught while writing the report, which
+	// meant a full scan ran, every request landed on the target, and the run
+	// then exited non-zero with nothing to show for it.
+	allow, err := report.ParseFilter(opts.filter)
+	if err != nil {
+		return err
+	}
+
+	if err := report.Prepare(opts.outDir); err != nil {
+		return err
+	}
+
 	guard, err := guardFromConfig(cfg)
 	if err != nil {
 		return err
@@ -115,7 +128,7 @@ func runAttack(cmd *cobra.Command, source string, opts attackOptions) error {
 	findings = maybeConfirm(cmd, cfg, findings, opts.headless, opts.outDir)
 	findings = maybeEscalate(findings, opts.escalate)
 
-	return writeAttackOutput(cmd, findings, opts.filter, opts.outDir)
+	return writeAttackOutput(cmd, findings, allow, opts.outDir)
 }
 
 func attachCheckpoint(eng *attack.Engine, resume string) (func(), error) {
@@ -144,20 +157,11 @@ func reportCoverage(cmd *cobra.Command, c attack.Coverage) {
 		c.Reachable, c.Sources, c.Redirectors, c.Params)
 }
 
-func writeAttackOutput(cmd *cobra.Command, findings []model.Finding, filter, outDir string) error {
-	allow, err := report.ParseFilter(filter)
-	if err != nil {
-		return err
-	}
-
+func writeAttackOutput(cmd *cobra.Command, findings []model.Finding, allow map[string]struct{}, outDir string) error {
 	findings = report.Apply(findings, allow)
 
-	if outDir != "" {
-		if err := report.WriteVersion(outDir, findings, version); err != nil {
-			return err
-		}
-	}
-
+	// Findings reach stdout before the report is written, so a directory that
+	// turns out to be unwritable costs the report and not the results.
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	for _, f := range findings {
 		if err := enc.Encode(f); err != nil {
@@ -165,7 +169,13 @@ func writeAttackOutput(cmd *cobra.Command, findings []model.Finding, filter, out
 		}
 	}
 
-	_, err = fmt.Fprintf(cmd.ErrOrStderr(), "%d findings\n", len(findings))
+	if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "%d findings\n", len(findings)); err != nil {
+		return err
+	}
 
-	return err
+	if outDir == "" {
+		return nil
+	}
+
+	return report.WriteVersion(outDir, findings, version)
 }

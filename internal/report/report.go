@@ -81,6 +81,21 @@ func Write(dir string, findings []model.Finding) error {
 	return WriteVersion(dir, findings, "dev")
 }
 
+// Prepare creates the report directory up front, so an unwritable path is an
+// error before the scan runs rather than after it. An empty dir means the
+// caller does not want files and is not an error here.
+func Prepare(dir string) error {
+	if dir == "" {
+		return nil
+	}
+
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
+		return fmt.Errorf("creating report directory: %w", err)
+	}
+
+	return nil
+}
+
 // WriteVersion is Write with the tool version recorded in the SARIF log.
 func WriteVersion(dir string, findings []model.Finding, version string) error {
 	if dir == "" {

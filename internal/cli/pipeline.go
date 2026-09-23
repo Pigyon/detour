@@ -21,6 +21,7 @@ import (
 	"github.com/nedlir/detour/internal/js"
 	"github.com/nedlir/detour/internal/model"
 	"github.com/nedlir/detour/internal/nuclei"
+	"github.com/nedlir/detour/internal/report"
 	"github.com/nedlir/detour/internal/resolve"
 	"github.com/spf13/cobra"
 )
@@ -42,6 +43,18 @@ func runPipeline(cmd *cobra.Command, target string, flags *reconFlags, headless 
 		return errors.New("config not loaded")
 	}
 
+	// Checked before recon, which is the expensive part: a misspelled
+	// mechanism would otherwise surface subdomains, crawl the target, and
+	// attack it, only to refuse to print what it found.
+	allow, err := report.ParseFilter(flags.filter)
+	if err != nil {
+		return err
+	}
+
+	if err := report.Prepare(flags.outDir); err != nil {
+		return err
+	}
+
 	c, err := scopedClient(cfg)
 	if err != nil {
 		return err
@@ -57,7 +70,7 @@ func runPipeline(cmd *cobra.Command, target string, flags *reconFlags, headless 
 	// flag a lie, which matters most to the operator who set it because their
 	// testing window had closed.
 	if flags.passive {
-		return writeAttackOutput(cmd, passiveFindings(cmd, urls, flags), flags.filter, flags.outDir)
+		return writeAttackOutput(cmd, passiveFindings(cmd, urls, flags), allow, flags.outDir)
 	}
 
 	// The js stage runs first. It is the only stage that can read what a
@@ -96,7 +109,7 @@ func runPipeline(cmd *cobra.Command, target string, flags *reconFlags, headless 
 	findings = maybeConfirm(cmd, cfg, findings, headless, flags.outDir)
 	findings = maybeEscalate(findings, flags.escalate)
 
-	return writeAttackOutput(cmd, findings, flags.filter, flags.outDir)
+	return writeAttackOutput(cmd, findings, allow, flags.outDir)
 }
 
 // passiveFindings reports what a run can know without sending the target a
