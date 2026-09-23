@@ -146,8 +146,11 @@ for e in json.load(sys.stdin):
         dec.append(u)
 open('$OUT/lab.txt', 'w').write('\n'.join(all_u) + '\n')
 open('$OUT/decoys.txt', 'w').write('\n'.join(dec) + '\n')
+env = [u for u in all_u if '/track/click' in u]
+open('$OUT/envelope.url', 'w').write((env[0] if env else '') + '\n')
 "
-ok "lab url list: $(wc -l < "$OUT/lab.txt") urls, $(wc -l < "$OUT/decoys.txt") decoys"
+check "L1 the lab catalog is the size it claims" 63 "$(wc -l < "$OUT/lab.txt")"
+atleast "L1 the catalog names its decoys" 1 "$(wc -l < "$OUT/decoys.txt")"
 
 # A Burp export and a HAR, so the importers are exercised on real shapes.
 cat > "$OUT/burp.xml" <<EOF
@@ -224,10 +227,30 @@ check "L3 decoys stay silent" 0 "$(findings "$D" attack "$OUT/decoys.txt" --scop
 rm -f "$OUT/lab.ckpt"
 R1=$(findings "$D" attack "$OUT/lab.txt" --scope-file "$OUT/lab.scope" --resume "$OUT/lab.ckpt" --rate 200 --concurrency 8)
 R2=$(findings "$D" attack "$OUT/lab.txt" --scope-file "$OUT/lab.scope" --resume "$OUT/lab.ckpt" --rate 200 --concurrency 8)
-check "L4 resume keeps its findings" "$R1" "$R2"
+check "L4/F4 resume twice keeps the same findings" "$R1" "$R2"
 
 "$D" js "$LAB/app/signin" --scope-file "$OUT/lab.scope" >/dev/null 2>&1 \
   && ok "L5 js stage ran" || bad "L5 js stage"
+
+# L6: the decoder on a real envelope. The blob class is otherwise only ever
+# seen through the attack engine, so the command itself went unrun.
+ENV_URL=$(cat "$OUT/envelope.url")
+if [ -n "$ENV_URL" ] && "$D" decode "$ENV_URL" > "$OUT/decoded.json" 2>/dev/null; then
+  python3 - "$OUT/decoded.json" <<'DEOF' > "$OUT/decoded.txt" 2>&1
+import json, sys
+b = json.load(open(sys.argv[1]))["blobs"][0]
+layers = b.get("layers") or []
+fields = b.get("url_fields") or []
+print("layers", ",".join(layers))
+print("located", len(fields), fields[0]["value"] if fields else "")
+print("mutated", "yes" if b.get("mutated") and b["mutated"] != b.get("source") else "no")
+DEOF
+  says "L6 decode names the envelope chain" 'layers.*base64:url.*zlib.*json' cat "$OUT/decoded.txt"
+  says "L6 decode locates the destination field" 'located 1 https://allowed.lab' cat "$OUT/decoded.txt"
+  says "L6 decode rewrites the envelope" 'mutated yes' cat "$OUT/decoded.txt"
+else
+  bad "L6 decode could not read the lab envelope"
+fi
 
 if "$D" js "$LAB/c02" --scope-file "$OUT/lab.scope" --findings 2>/dev/null > "$OUT/c02.jsonl" \
    && [ -s "$OUT/c02.jsonl" ] \
@@ -459,6 +482,19 @@ says "E2 a total archive failure is reported" 'every source failed' \
   "$D" harvest example.org --scope-file <(echo example.org) --proxy http://127.0.0.1:1
 
 # F15: the commands that offer --out have to write something.
+# Every command in the inventory has to run at least once. surface, decode,
+# dorks and version were listed as features and never exercised.
+says "the version command reports a build" 'detour' "$D" version
+says "dorks generates offline queries" 'redirect_uri\|"engine"' "$D" dorks example.org
+
+rm -rf "$OUT/out-surface"
+if timeout 180 "$D" surface 127.0.0.1 --scope-file "$OUT/lab.scope" --out "$OUT/out-surface" >/dev/null 2>&1 \
+   && [ -s "$OUT/out-surface/surface.json" ]; then
+  ok "F15 surface --out writes files"
+else
+  bad "F15 surface --out"
+fi
+
 rm -rf "$OUT/out-harvest" "$OUT/out-select" "$OUT/out-js"
 "$D" harvest "127.0.0.1:${LAB_PORT}" --scope-file "$OUT/lab.scope" --depth 1 --out "$OUT/out-harvest" >/dev/null 2>&1
 "$D" select "$OUT/lab.txt" --out "$OUT/out-select" >/dev/null 2>&1
