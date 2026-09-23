@@ -121,14 +121,68 @@ func TestTargetParamsFindsURLValuedNames(t *testing.T) {
 	}
 }
 
-func TestTargetParamsIgnoresOrdinaryValues(t *testing.T) {
+// TestOrdinaryValuesIgnoredOnANonRedirector keeps the request budget sane:
+// an endpoint that never answers with a destination gets only its
+// redirect-named and url-valued parameters probed.
+func TestOrdinaryValuesIgnoredOnANonRedirector(t *testing.T) {
 	t.Parallel()
 
-	eng, srv := echoEngine(t, "q")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
 
-	findings, err := eng.Run(context.Background(), []string{srv.URL + "/search?q=2&sort=name"})
+	eng := engineFor(t)
+
+	findings, err := eng.Run(context.Background(), []string{srv.URL + "/page?q=2&sort=name"})
 	require.NoError(t, err)
-	assert.Empty(t, findings, "a parameter holding a number is not a destination")
+	assert.Empty(t, findings)
+}
+
+// TestRedirectorWidensToEveryParameter is the regression for a live miss.
+//
+// The firing range serves a meta refresh from "?q=/". The name is not on any
+// redirect list and the value is not url shaped, so neither signal fired and
+// the endpoint was never probed, even though it plainly redirects. An endpoint
+// that already answers with a destination has earned a look at all of its
+// parameters.
+func TestRedirectorWidensToEveryParameter(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		value := r.URL.Query().Get("q")
+		if value == "" {
+			w.WriteHeader(http.StatusOK)
+
+			return
+		}
+
+		w.Header().Set("Location", value)
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	eng := engineFor(t)
+
+	findings, err := eng.Run(context.Background(), []string{srv.URL + "/redirect/meta?q=/"})
+	require.NoError(t, err)
+	require.NotEmpty(t, findings, "a proven redirector must have every parameter probed")
+
+	for _, f := range findings {
+		assert.Equal(t, "q", f.Candidate.ParamName)
+	}
+}
+
+// engineFor builds an engine for a test server.
+func engineFor(t *testing.T) *attack.Engine {
+	t.Helper()
+
+	cfg := config.Config{Canary: testCanary, Rate: 300, Concurrency: 4, Timeout: 3 * time.Second}
+
+	c, err := client.New(cfg, scope.New(cfg.Canary))
+	require.NoError(t, err)
+
+	return attack.New(c, cfg.Canary, "", cfg.Concurrency, nil)
 }
 
 // echoEngine serves an endpoint that redirects to whatever param carries.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"sort"
@@ -104,6 +105,12 @@ func techniqueForParam(name string) (string, bool) {
 // here as well means it also applies to a bare URL list, and means the two
 // stages cannot disagree about which parameters matter.
 func targetParams(query url.Values) []string {
+	return targetParamsOn(query, false)
+}
+
+// targetParamsOn is targetParams, told whether the endpoint has already shown
+// it redirects. On a proven redirector every parameter is a candidate.
+func targetParamsOn(query url.Values, redirector bool) []string {
 	seen := map[string]struct{}{}
 	out := []string{}
 
@@ -132,7 +139,7 @@ func targetParams(query url.Values) []string {
 			continue
 		}
 
-		if !looksLikeURL(query.Get(name)) {
+		if !looksLikeURL(query.Get(name)) && !redirector {
 			continue
 		}
 
@@ -146,6 +153,71 @@ func targetParams(query url.Values) []string {
 	sort.Strings(out)
 
 	return out
+}
+
+// redirectorMark is added to a parsed URL's fragment to record that the
+// endpoint answered with a destination. The fragment is never sent, so this
+// cannot change what the target sees.
+const redirectorMark = "detour-redirector"
+
+func markRedirector(parsed *url.URL) *url.URL {
+	next := *parsed
+	next.Fragment = redirectorMark
+
+	return &next
+}
+
+func isMarkedRedirector(parsed *url.URL) bool {
+	return parsed != nil && parsed.Fragment == redirectorMark
+}
+
+// baselineKey records the redirector probe in the checkpoint under a name no
+// technique uses, so a resumed run reaches the same conclusion without
+// sending the request again.
+const baselineKey = "baseline"
+
+// baseline sends the source URL once and reports whether the endpoint answers
+// with a destination, and whether it answered at all.
+func (e *Engine) baseline(ctx context.Context, raw string) (redirector, reachable bool) {
+	if e.checkpoint != nil && e.checkpoint.Seen(raw, baselineKey, baselineKey) {
+		_, was := e.checkpoint.Recover(raw, baselineKey, baselineKey)
+
+		return was, true
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
+	if err != nil {
+		return false, false
+	}
+
+	resp, err := e.client.Do(ctx, req)
+	if err != nil {
+		return false, false
+	}
+
+	defer func() { _ = resp.Body.Close() }()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyScan))
+	redirector = len(destValues(resp, body)) > 0
+
+	e.recordBaseline(raw, redirector)
+
+	return redirector, true
+}
+
+// recordBaseline stores the redirector verdict so a resume can read it back.
+func (e *Engine) recordBaseline(raw string, redirector bool) {
+	if e.checkpoint == nil {
+		return
+	}
+
+	if !redirector {
+		_ = e.checkpoint.RecordAttempt(raw, baselineKey, baselineKey, false)
+
+		return
+	}
+
+	_ = e.checkpoint.RecordHit(raw, baselineKey, baselineKey, model.Finding{})
 }
 
 // sortedKeys returns a query's parameter names in a stable order.
@@ -327,9 +399,19 @@ func (e *Engine) Run(ctx context.Context, sources []string) ([]model.Finding, er
 	)
 
 	err := pool.Run(ctx, e.concurrency, sources, func(ctx context.Context, raw string) error {
+		slog.Debug("attacking source", "url", raw)
+
 		hits, err := e.attackOne(ctx, raw)
 		if err != nil {
 			return err
+		}
+
+		for _, f := range hits {
+			slog.Debug("finding",
+				"technique", f.TechniqueID,
+				"mechanism", f.Mechanism,
+				"param", f.Candidate.ParamName,
+				"payload", f.Payload)
 		}
 
 		if len(hits) == 0 {
@@ -358,6 +440,28 @@ func (e *Engine) attackOne(ctx context.Context, raw string) ([]model.Finding, er
 	parsed, err := url.Parse(raw)
 	if err != nil {
 		return nil, fmt.Errorf("parsing source: %w", err)
+	}
+
+	// One request decides two things before any payload is spent.
+	//
+	// A host that does not answer at all is not worth forty more requests: on
+	// a host that drops packets, that was the difference between one second
+	// and over a minute per URL.
+	//
+	// And an endpoint that already answers with a destination is a redirector,
+	// whatever its parameters are called, so every parameter on it is worth
+	// attacking. The one carrying the destination need not have a recognizable
+	// name or a url-shaped value: "?q=/" on a redirector is the case a name
+	// list and a value test both miss.
+	redirector, reachable := e.baseline(ctx, raw)
+	if !reachable {
+		slog.Debug("source did not answer, skipping its payloads", "url", raw)
+
+		return nil, nil
+	}
+
+	if redirector {
+		parsed = markRedirector(parsed)
 	}
 
 	hits, err := e.attackBlobs(ctx, raw)
@@ -452,7 +556,7 @@ func (e *Engine) attackParams(ctx context.Context, parsed *url.URL, p payload.Pa
 	hits := []model.Finding{}
 	query := parsed.Query()
 
-	for _, actual := range targetParams(query) {
+	for _, actual := range targetParamsOn(query, isMarkedRedirector(parsed)) {
 		// A bare-host payload belongs only on a host-shaped parameter, and a
 		// full-URL payload only on the others.
 		if isHostParam(actual) != (p.Mechanism == mechHost) {

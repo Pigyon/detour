@@ -300,6 +300,14 @@ func terminalTransportError(err error) bool {
 		return !dnsErr.IsTemporary
 	}
 
+	// A request that ran out the operator's own timeout is settled too. The
+	// deadline was chosen deliberately, and sending the same request three
+	// more times against a host that is dropping packets only multiplies the
+	// wait: a blackholed host cost over a hundred seconds for one URL.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
 	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EHOSTUNREACH) ||
 		errors.Is(err, syscall.ENETUNREACH)
 }
