@@ -13,11 +13,8 @@ const (
 	// OriginHash is location.hash, which never reaches the server at all.
 	OriginHash = "location.hash"
 	// OriginQuery is the query string, readable server-side.
-	OriginQuery = "location.search"
-	// OriginReferrer is document.referrer.
+	OriginQuery    = "location.search"
 	OriginReferrer = "document.referrer"
-	// OriginMessage is a postMessage payload.
-	OriginMessage = "postMessage"
 	// OriginStorage is localStorage or sessionStorage.
 	OriginStorage = "storage"
 	// OriginUnknown means the value was not traced to a controllable source.

@@ -4,10 +4,11 @@ import (
 	"strings"
 
 	"github.com/nedlir/detour/internal/model"
+	"github.com/nedlir/detour/internal/payload"
 )
 
 // mechanismJS labels a finding that came from reading client-side code.
-const mechanismJS = "js"
+const mechanismJS = payload.MechJS
 
 // Findings projects a page's verdicts onto capability-scored findings.
 //

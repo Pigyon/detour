@@ -7,9 +7,8 @@ import (
 	"strings"
 )
 
-// Fetcher retrieves a URL's body. It is declared here because this is where it
-// is consumed; the CLI supplies one backed by the scoped HTTP client, so the
-// scope guard still governs every request this package causes.
+// Fetcher retrieves a URL's body. The CLI supplies one backed by the scoped
+// HTTP client, so the scope guard governs every request this package causes.
 type Fetcher interface {
 	Get(ctx context.Context, rawURL string) ([]byte, error)
 }

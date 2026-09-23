@@ -301,6 +301,12 @@ func canonical(v *tdjs.Var) *tdjs.Var {
 const maxResolveDepth = 6
 
 // resolve follows a bare identifier back to the expression it was assigned.
+//
+// Exhausting the depth reports failure, not success. Reporting success while
+// still holding a *tdjs.Var hands the caller an identifier that resolves to
+// another identifier, and a caller that recurses on the result then never
+// terminates. `var a = a` is enough to produce that, and a cycle across two
+// bindings is an ordinary shape in minified code.
 func (s *scanner) resolve(e tdjs.IExpr) (tdjs.IExpr, bool) {
 	current := e
 
@@ -318,7 +324,7 @@ func (s *scanner) resolve(e tdjs.IExpr) (tdjs.IExpr, bool) {
 		current = next
 	}
 
-	return current, true
+	return current, false
 }
 
 // guardsIn collects the conditions inside an expression that decide which

@@ -345,28 +345,42 @@ func isSchemeBlocklist(e tdjs.IExpr) bool {
 		strings.Contains(text, "data:")
 }
 
+// maxRefDepth bounds how far refFor follows an expression. Hostile or merely
+// minified code can bind an identifier to itself, or two identifiers to each
+// other, and an unbounded walk over that is a stack overflow rather than a
+// panic: it cannot be recovered, so it takes the whole run with it.
+const maxRefDepth = 32
+
 // refFor names an allowlist detour could not evaluate, preferring the property
 // the list was ultimately read from. It follows identifiers through their
 // bindings, so an intermediate variable does not become the reported name.
 func (g *guardVisitor) refFor(e tdjs.IExpr) string {
+	return g.refAt(e, 0)
+}
+
+func (g *guardVisitor) refAt(e tdjs.IExpr, depth int) string {
+	if depth >= maxRefDepth {
+		return ""
+	}
+
 	switch node := e.(type) {
 	case *tdjs.GroupExpr:
-		return g.refFor(node.X)
+		return g.refAt(node.X, depth+1)
 	case *tdjs.BinaryExpr:
-		if ref := g.refFor(node.X); ref != "" {
+		if ref := g.refAt(node.X, depth+1); ref != "" {
 			return ref
 		}
 
-		return g.refFor(node.Y)
+		return g.refAt(node.Y, depth+1)
 	case *tdjs.CondExpr:
-		if ref := g.refFor(node.X); ref != "" {
+		if ref := g.refAt(node.X, depth+1); ref != "" {
 			return ref
 		}
 
-		return g.refFor(node.Y)
+		return g.refAt(node.Y, depth+1)
 	case *tdjs.ArrayExpr:
 		for _, item := range node.List {
-			if ref := g.refFor(item.Value); ref != "" {
+			if ref := g.refAt(item.Value, depth+1); ref != "" {
 				return ref
 			}
 		}
@@ -376,7 +390,7 @@ func (g *guardVisitor) refFor(e tdjs.IExpr) string {
 		return literalName(node.Y)
 	case *tdjs.Var:
 		if def, resolved := g.scan.resolve(node); resolved {
-			return g.refFor(def)
+			return g.refAt(def, depth+1)
 		}
 
 		return string(node.Name())
