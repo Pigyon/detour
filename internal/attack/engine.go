@@ -155,22 +155,6 @@ func targetParamsOn(query url.Values, redirector bool) []string {
 	return out
 }
 
-// redirectorMark is added to a parsed URL's fragment to record that the
-// endpoint answered with a destination. The fragment is never sent, so this
-// cannot change what the target sees.
-const redirectorMark = "detour-redirector"
-
-func markRedirector(parsed *url.URL) *url.URL {
-	next := *parsed
-	next.Fragment = redirectorMark
-
-	return &next
-}
-
-func isMarkedRedirector(parsed *url.URL) bool {
-	return parsed != nil && parsed.Fragment == redirectorMark
-}
-
 // baselineKey records the redirector probe in the checkpoint under a name no
 // technique uses, so a resumed run reaches the same conclusion without
 // sending the request again.
@@ -504,10 +488,6 @@ func (e *Engine) attackOne(ctx context.Context, raw string) ([]model.Finding, er
 		return nil, nil
 	}
 
-	if redirector {
-		parsed = markRedirector(parsed)
-	}
-
 	e.noteCoverage(true, redirector, len(targetParamsOn(parsed.Query(), redirector)))
 
 	hits, err := e.attackBlobs(ctx, raw)
@@ -524,7 +504,7 @@ func (e *Engine) attackOne(ctx context.Context, raw string) ([]model.Finding, er
 	// targeted run and the case where --concurrency appeared to do nothing.
 	// The client bounds what is actually on the wire, so fanning out here
 	// cannot exceed the operator's limit.
-	payloadHits, err := e.runPayloads(ctx, raw, parsed)
+	payloadHits, err := e.runPayloads(ctx, raw, parsed, redirector)
 	if err != nil {
 		return nil, err
 	}
@@ -552,7 +532,9 @@ func crackedParams(hits []model.Finding) map[string]struct{} {
 }
 
 // runPayloads fires every payload at one source, concurrently.
-func (e *Engine) runPayloads(ctx context.Context, raw string, parsed *url.URL) ([]model.Finding, error) {
+func (e *Engine) runPayloads(
+	ctx context.Context, raw string, parsed *url.URL, redirector bool,
+) ([]model.Finding, error) {
 	var (
 		mu   sync.Mutex
 		hits []model.Finding
@@ -606,7 +588,7 @@ func (e *Engine) runPayloads(ctx context.Context, raw string, parsed *url.URL) (
 				collect(f)
 			}
 		default:
-			collect(e.attackParams(ctx, parsed, p, claim)...)
+			collect(e.attackParams(ctx, parsed, p, claim, redirector)...)
 		}
 
 		return nil
@@ -660,12 +642,12 @@ func (e *Engine) attackKeyword(ctx context.Context, raw string) ([]model.Finding
 }
 
 func (e *Engine) attackParams(
-	ctx context.Context, parsed *url.URL, p payload.Payload, claim func(string) bool,
+	ctx context.Context, parsed *url.URL, p payload.Payload, claim func(string) bool, redirector bool,
 ) []model.Finding {
 	hits := []model.Finding{}
 	query := parsed.Query()
 
-	for _, actual := range targetParamsOn(query, isMarkedRedirector(parsed)) {
+	for _, actual := range targetParamsOn(query, redirector) {
 		// A bare-host payload belongs only on a host-shaped parameter, and a
 		// full-URL payload only on the others.
 		if isHostParam(actual) != (p.Mechanism == mechHost) {
