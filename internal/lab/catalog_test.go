@@ -31,7 +31,7 @@ func TestCatalogCoversEveryTechniqueID(t *testing.T) {
 		assert.True(t, ok, "missing coverage for %s", id)
 	}
 
-	assert.Len(t, lab.TechniqueIDs, 43)
+	assert.Len(t, lab.TechniqueIDs, 44)
 }
 
 func TestCatalogProbesAreRouted(t *testing.T) {
@@ -58,7 +58,7 @@ func TestWriteCatalogJSON(t *testing.T) {
 
 	var got []lab.Endpoint
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
-	assert.GreaterOrEqual(t, len(got), 43)
+	assert.GreaterOrEqual(t, len(got), 44)
 }
 
 func TestCatalogEndpointJSON(t *testing.T) {

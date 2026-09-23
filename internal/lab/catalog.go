@@ -24,10 +24,13 @@ const paramURL = "url"
 
 // Endpoint describes one lab route for tests and detour lab --list.
 type Endpoint struct {
-	ID          string   `json:"id,omitempty"`
-	Path        string   `json:"path"`
-	Probe       string   `json:"probe"`
-	Param       string   `json:"param,omitempty"`
+	ID    string `json:"id,omitempty"`
+	Path  string `json:"path"`
+	Probe string `json:"probe"`
+	Param string `json:"param,omitempty"`
+	// ProbeValue is the value Param needs for the endpoint to do anything at
+	// all. Empty means any destination-shaped value will do.
+	ProbeValue  string   `json:"probe_value,omitempty"`
 	Kind        Kind     `json:"kind"`
 	Covers      []string `json:"covers,omitempty"`
 	Description string   `json:"description"`
@@ -37,7 +40,7 @@ type Endpoint struct {
 var TechniqueIDs = []string{
 	"OR-A01", "OR-A02", "OR-A03", "OR-A04", "OR-A05",
 	"OR-A06", "OR-A07", "OR-A08", "OR-A09", "OR-A10",
-	"OR-A11", "OR-A12", "OR-A13", "OR-A14", "OR-A15",
+	"OR-A11", "OR-A12", "OR-A13", "OR-A14", "OR-A15", "OR-A16",
 	"OR-B01", "OR-B02", "OR-B03", "OR-B04", "OR-B05",
 	"OR-C01", "OR-C02", "OR-C03", "OR-C04",
 	"OR-D01", "OR-D02", "OR-D03", "OR-D04", "OR-D05", "OR-D06",
@@ -62,6 +65,7 @@ var catalog = []Endpoint{
 	{ID: "OR-A13", Path: "/a13", Probe: "/a13", Param: paramURL, Kind: KindVuln, Description: "endswith on the raw URL string"},
 	{ID: "OR-A14", Path: "/a14", Probe: "/a14", Param: paramURL, Kind: KindVuln, Description: "literal http(s):// blocklist; malformed scheme"},
 	{ID: "OR-A15", Path: "/a15", Probe: "/a15", Param: paramURL, Kind: KindVuln, Description: "string blocklist of loopback dotted-quads"},
+	{ID: "OR-A16", Path: "/a16", Probe: "/a16", Param: paramURL, Kind: KindVuln, Description: "validates the first copy of a repeated parameter, redirects using the last"},
 	{ID: "OR-B01", Path: "/track/click2/{blob}", Probe: "/track/click2/invalid.html", Kind: KindVuln, Description: "EngageLab-style base64url(zlib(json)) click wrapper"},
 	{Path: "/track/click3/{blob}", Probe: "/track/click3/invalid.html", Kind: KindVuln, Covers: []string{"OR-B01"}, Description: "click wrapper whose destination is bound to a real message id but not to a synthetic one"},
 	{ID: "OR-B02", Path: "/ls/click", Probe: "/ls/click", Param: "upn", Kind: KindVuln, Description: "SendGrid-style unsigned ct wrapper"},
@@ -75,7 +79,7 @@ var catalog = []Endpoint{
 	{Path: "/c03/frame", Probe: "/c03/frame", Param: "to", Kind: KindVuln, Description: "iframe document assigning top.location"},
 	{ID: "OR-C04", Path: "/c04", Probe: "/c04", Param: paramURL, Kind: KindVuln, Description: "meta refresh, 200 no Location"},
 	{ID: "OR-D01", Path: "/d01", Probe: "/d01", Kind: KindVuln, Description: "X-Forwarded-Host reflected into Location"},
-	{ID: "OR-D02", Path: "/_next/d02", Probe: "/_next/d02", Param: "destHost", Kind: KindVuln, Description: "Next.js-style hostname built from request input"},
+	{ID: "OR-D02", Path: "/_next/d02", Probe: "/_next/d02", Param: "destHost", ProbeValue: AllowedHost, Kind: KindVuln, Description: "Next.js-style hostname built from request input"},
 	{ID: "OR-D03", Path: "/d03/{path...}", Probe: "/d03/", Kind: KindVuln, Description: "Location built from the raw path, not path.Clean"},
 	{ID: "OR-D04", Path: "/saml/acs", Probe: "/saml/acs", Param: "RelayState", Kind: KindVuln, Description: "SAML RelayState free-text redirect"},
 	{Path: "/oidc/logout", Probe: "/oidc/logout", Param: "post_logout_redirect_uri", Kind: KindVuln, Description: "OIDC post_logout_redirect_uri unvalidated"},
@@ -84,7 +88,7 @@ var catalog = []Endpoint{
 	{ID: "OR-E01", Path: "/e01", Probe: "/e01", Param: paramURL, Kind: KindVuln, Description: "JS sink with no javascript: scheme check"},
 	{ID: "OR-E02", Path: "/e02", Probe: "/e02", Param: paramURL, Kind: KindVuln, Description: "JS sink that accepts data: URIs"},
 	{ID: "OR-E03", Path: "/e03", Probe: "/e03", Param: paramURL, Kind: KindVuln, Description: "exact host allowlist that still permits http:"},
-	{ID: "OR-F01", Path: "/oauth/authorize", Probe: "/oauth/authorize", Param: "redirect_uri", Kind: KindScenario, Description: "registered redirect_uri prefix check hiding a nested redirect"},
+	{ID: "OR-F01", Path: "/oauth/authorize", Probe: "/oauth/authorize", Param: "redirect_uri", ProbeValue: "https://" + AllowedHost + "/callback", Kind: KindScenario, Description: "registered redirect_uri prefix check hiding a nested redirect"},
 	{ID: "OR-F02", Path: "/csp/redir", Probe: "/csp/redir", Param: paramURL, Kind: KindScenario, Description: "open redirect on a CSP-allowlisted host"},
 	{Path: "/csp", Probe: "/csp", Kind: KindScenario, Description: "page whose CSP allowlists allowed.lab"},
 	{ID: "OR-F03", Path: "/ssrf/fetch", Probe: "/ssrf/fetch", Param: paramURL, Kind: KindScenario, Covers: []string{"OR-F07"}, Description: "server-side fetcher that follows in-lab hops only"},
@@ -112,6 +116,11 @@ var catalog = []Endpoint{
 }
 
 // Catalog returns a copy of the lab endpoint list.
+//
+// The opaque-destination probes are built here rather than written as literals
+// because those endpoints reject anything that is not a real envelope. A
+// placeholder would make the catalog look complete while handing every
+// consumer a 400.
 func Catalog() []Endpoint {
 	out := make([]Endpoint, len(catalog))
 	copy(out, catalog)
@@ -120,9 +129,52 @@ func Catalog() []Endpoint {
 		if catalog[i].Covers != nil {
 			out[i].Covers = append([]string{}, catalog[i].Covers...)
 		}
+
+		if probe, ok := envelopeProbe(out[i].Path); ok {
+			out[i].Probe = probe
+		}
 	}
 
 	return out
+}
+
+// envelopeProbe builds a valid envelope for the endpoints that need one.
+func envelopeProbe(path string) (string, bool) {
+	dest := "https://" + AllowedHost + "/home"
+
+	switch path {
+	case "/track/click2/{blob}":
+		return encodedPath("/track/click2/", EncodeClick, dest, ".html")
+	case "/track/click3/{blob}":
+		return encodedPath("/track/click3/", EncodeBoundClick, dest, ".html")
+	case "/ls/click":
+		blob, err := EncodeUPN(dest)
+		if err != nil {
+			return "", false
+		}
+
+		return "/ls/click?upn=" + blob, true
+	case "/b03":
+		token, err := EncodeJWT(dest)
+		if err != nil {
+			return "", false
+		}
+
+		return "/b03?token=" + token, true
+	case "/decoy/signed/{blob}":
+		return "/decoy/signed/" + SignDest(dest), true
+	default:
+		return "", false
+	}
+}
+
+func encodedPath(prefix string, encode func(string) (string, error), dest, suffix string) (string, bool) {
+	blob, err := encode(dest)
+	if err != nil {
+		return "", false
+	}
+
+	return prefix + blob + suffix, true
 }
 
 // WriteCatalog prints the endpoint list as indented JSON.

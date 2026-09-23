@@ -24,6 +24,7 @@ func registerParserDifferentials(mux *http.ServeMux) {
 	mux.HandleFunc("GET /a13", paramRedirect("url", allowA13))
 	mux.HandleFunc("GET /a14", paramRedirect("url", allowA14))
 	mux.HandleFunc("GET /a15", paramRedirect("url", allowA15))
+	mux.HandleFunc("GET /a16", handleA16)
 }
 
 func allowA01(raw string) bool {
@@ -206,4 +207,24 @@ func allowA15(raw string) bool {
 	default:
 		return true
 	}
+}
+
+// handleA16 validates the first copy of a repeated parameter and redirects
+// using the last, which is what a framework and a proxy disagreeing looks
+// like from outside.
+func handleA16(w http.ResponseWriter, r *http.Request) {
+	values := r.URL.Query()["url"]
+	if len(values) == 0 {
+		reject(w, "missing url")
+
+		return
+	}
+
+	if !strings.Contains(values[0], AllowedHost) {
+		reject(w, "not on allowlist")
+
+		return
+	}
+
+	found(w, values[len(values)-1])
 }

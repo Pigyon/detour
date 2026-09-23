@@ -2,13 +2,13 @@ package report
 
 // technique is what a report says about one technique id: what it is, and
 // what to change.
-//
-// One table rather than two. A title and its fix belong to the same technique,
-// and keeping them together is what stops a report naming a defect it has no
-// advice for.
+
 type technique struct {
 	Title string
-	Fix   string
+	// Why explains the defect in the terms a report needs: what the validator
+	// checked, and what the client did instead.
+	Why string
+	Fix string
 }
 
 // techniques covers every id in REFERENCE.md.
@@ -72,6 +72,13 @@ var techniques = map[string]technique{
 	"OR-A15": {
 		Title: "String blocklist of loopback addresses",
 		Fix:   "Resolve the host and check the address, rather than blocklisting strings.",
+	},
+	"OR-A16": {
+		Title: "Parameter pollution splits the validated value from the used one",
+		Why: "The parameter is sent twice. The validator reads one copy and the redirect is built from the " +
+			"other, because the framework, the proxy and the application do not agree on which copy wins.",
+		Fix: "Reject a request that carries the destination parameter more than once, and read it through " +
+			"one accessor everywhere.",
 	},
 	"OR-B01": {
 		Title: "Destination buried in a compressed opaque blob",
@@ -209,4 +216,23 @@ func Remediation(id string) string {
 	}
 
 	return defaultRemediation
+}
+
+// techniqueLine names a technique as "id: title", for a report heading.
+func techniqueLine(id string) string {
+	if id == "" {
+		return defaultTitle
+	}
+
+	return id + ": " + techniqueTitle(id)
+}
+
+// techniqueRationale explains why a validator lets a technique through, for
+// the findings that carry no rationale of their own.
+func techniqueRationale(id string) string {
+	if t, ok := techniques[id]; ok && t.Why != "" {
+		return t.Why
+	}
+
+	return ""
 }
