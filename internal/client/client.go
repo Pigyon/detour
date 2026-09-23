@@ -24,6 +24,18 @@ const (
 	minRate      = 0.1
 	backoffBase  = 200 * time.Millisecond
 	defaultBurst = 1
+
+	// slowCooldown is the shortest wall-clock gap between two rate cuts for
+	// one host.
+	//
+	// Halving once per request sounds gentle and is not: a host that answers
+	// 403 to everything, which is what a WAF that has made up its mind does,
+	// takes a requested 500 rps to the 0.1 floor in thirteen requests. The
+	// run then spends ten seconds per request and looks hung. One URL against
+	// such a host took fifteen minutes for eighty-eight requests. Pacing the
+	// cut by time instead keeps the adaptation and bounds how fast it can
+	// collapse.
+	slowCooldown = 5 * time.Second
 )
 
 // Client issues scoped, credential-safe HTTP requests and never follows redirects.
@@ -149,8 +161,7 @@ func (c *Client) acquire(ctx context.Context) (func(), error) {
 }
 
 func (c *Client) wait(ctx context.Context, host string) error {
-	limiter := c.limiterFor(host)
-	if err := limiter.Wait(ctx); err != nil {
+	if err := c.limiterFor(host).limiter.Wait(ctx); err != nil {
 		return fmt.Errorf("rate limiter: %w", err)
 	}
 
@@ -169,23 +180,50 @@ func (c *Client) wait(ctx context.Context, host string) error {
 	}
 }
 
-func (c *Client) limiterFor(host string) *rate.Limiter {
+// hostLimit is one host's pacing: its limiter, and when it was last slowed.
+type hostLimit struct {
+	limiter *rate.Limiter
+
+	mu       sync.Mutex
+	lastSlow time.Time
+}
+
+// slow halves the host's rate, at most once per slowCooldown.
+func (h *hostLimit) slow(now time.Time) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if !h.lastSlow.IsZero() && now.Sub(h.lastSlow) < slowCooldown {
+		return
+	}
+
+	h.lastSlow = now
+
+	next := h.limiter.Limit() / 2
+	if next < minRate {
+		next = minRate
+	}
+
+	h.limiter.SetLimit(next)
+}
+
+func (c *Client) limiterFor(host string) *hostLimit {
 	if got, ok := c.limiters.Load(host); ok {
-		limiter, ok := got.(*rate.Limiter)
+		limit, ok := got.(*hostLimit)
 		if ok {
-			return limiter
+			return limit
 		}
 	}
 
-	created := rate.NewLimiter(c.rate, defaultBurst)
+	created := &hostLimit{limiter: rate.NewLimiter(c.rate, defaultBurst)}
 	actual, _ := c.limiters.LoadOrStore(host, created)
 
-	limiter, ok := actual.(*rate.Limiter)
+	limit, ok := actual.(*hostLimit)
 	if !ok {
 		return created
 	}
 
-	return limiter
+	return limit
 }
 
 func (c *Client) doWithRetry(ctx context.Context, req *http.Request) (*http.Response, error) {
@@ -303,14 +341,7 @@ func (b *cancelBody) Close() error {
 }
 
 func (c *Client) slowHost(host string) {
-	limiter := c.limiterFor(host)
-
-	next := limiter.Limit() / 2
-	if next < minRate {
-		next = minRate
-	}
-
-	limiter.SetLimit(next)
+	c.limiterFor(host).slow(time.Now())
 }
 
 func shouldRetry(status int) bool {

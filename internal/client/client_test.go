@@ -334,6 +334,35 @@ func TestPushbackSlowsOncePerRequest(t *testing.T) {
 		"one request that is pushed back must halve the rate once, not once per attempt")
 }
 
+// TestSustainedPushbackDoesNotCollapseTheRate is the case a WAF produces.
+//
+// Halving once per request is not gentle: a host that answers 403 to
+// everything takes a requested rate to the 0.1 floor in thirteen requests,
+// after which the run spends ten seconds per request and looks hung. One URL
+// against such a host spent fifteen minutes on eighty-eight requests.
+func TestSustainedPushbackDoesNotCollapseTheRate(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+
+	host := hostOf(t, srv.URL)
+	c := newTestClient(t, config.Config{Rate: 64}, host)
+	before := c.RateFor(host)
+
+	for range 20 {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
+		require.NoError(t, err)
+
+		drain(c.Do(context.Background(), req))
+	}
+
+	assert.InEpsilon(t, before/2, c.RateFor(host), 1e-9,
+		"twenty refusals in a row must cost one rate cut, not twenty")
+}
+
 // TestForbiddenSlowsWithoutRetrying is the other half: a 403 is a terminal
 // answer worth no retry, and still a request to send less traffic.
 func TestForbiddenSlowsWithoutRetrying(t *testing.T) {
