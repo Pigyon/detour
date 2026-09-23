@@ -98,9 +98,16 @@ func (c *Confirmer) confirmOne(ctx context.Context, f model.Finding) (model.Find
 		return f, stateAttempted, nil
 	}
 
-	if err := c.writeArtifacts(f, result); err != nil {
-		return f, stateFailed, err
+	// A finding the browser proved is still proved when its screenshot cannot
+	// be written. Returning the error here aborted the whole run and discarded
+	// every finding already confirmed, which is the opposite of this method's
+	// contract: a finding is only ever promoted, never dropped.
+	written, err := c.writeArtifacts(f, result)
+	if err != nil {
+		f = noteFailure(f, fmt.Errorf("writing artifacts: %w", err))
 	}
+
+	f.Artifacts = written
 
 	return promote(f, result), stateConfirmed, nil
 }
@@ -113,11 +120,23 @@ func noteFailure(f model.Finding, err error) model.Finding {
 	return f
 }
 
+// provenWithoutRedirect reports whether a finding's proof takes a form other
+// than an off-site navigation.
+func provenWithoutRedirect(c model.CapabilitySet) bool {
+	return c.JavaScriptScheme || c.DataScheme
+}
+
 // promote records the browser's verdict on a finding.
 func promote(f model.Finding, result Result) model.Finding {
 	f.Verdict = model.VerdictConfirmed
 	f.Capabilities.BrowserConfirmed = true
-	f.Capabilities.RedirectExternal = true
+
+	// Only a finding that already claimed an off-site navigation keeps that
+	// claim. A javascript: or data: destination reaching a sink is script
+	// execution, and asserting redirect.external here made a headless run
+	// disagree with a headless-free one about the same finding.
+	f.Capabilities.RedirectExternal = f.Capabilities.RedirectExternal ||
+		!provenWithoutRedirect(f.Capabilities)
 
 	if hops := navigationHops(result.Chain); hops > f.Capabilities.HopCount {
 		f.Capabilities.HopCount = hops
@@ -147,9 +166,9 @@ func navigationHops(chain []Hop) int {
 	return hops
 }
 
-func (c *Confirmer) writeArtifacts(f model.Finding, result Result) error {
+func (c *Confirmer) writeArtifacts(f model.Finding, result Result) ([]string, error) {
 	if c.opts.ArtifactDir == "" {
-		return nil
+		return nil, nil
 	}
 
 	return WriteArtifacts(c.opts.ArtifactDir, artifactKey(f, result.Target), result)

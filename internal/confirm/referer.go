@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"sync/atomic"
 	"time"
+
+	"github.com/nedlir/detour/internal/model"
 )
 
 // refererShutdown bounds the wait when tearing the harness server down.
@@ -148,4 +150,40 @@ func newNonce() (string, error) {
 	}
 
 	return "detour-" + hex.EncodeToString(buf), nil
+}
+
+// Finding turns a confirmed referer test into a reportable finding.
+//
+// Without this the result was printed and nothing else, so OR-D05 could be
+// observed but never appeared in findings.jsonl, the report, or the SARIF. The
+// evidence here is unusually strong: the destination came from the browser's
+// own Referer header, so no request-forging client could have produced it.
+func (r RefererResult) Finding() (model.Finding, bool) {
+	if !r.Confirmed || !r.Returned {
+		return model.Finding{}, false
+	}
+
+	cand := model.NewNavigationCandidate(r.Target, model.RepresentationHeader)
+
+	f := model.NewFinding()
+	f.TechniqueID = "OR-D05"
+	f.Mechanism = "header"
+	f.Payload = "Referer: " + r.LinkPage
+	f.Candidate = cand
+	f.Verdict = model.VerdictConfirmed
+	f.Capabilities.RedirectExternal = true
+	f.Capabilities.InputControlled = true
+	f.Capabilities.BrowserConfirmed = true
+	f.Capabilities.RefererLeak = true
+	f.Capabilities.HopCount = len(r.Chain)
+	f.Candidate.Capabilities = f.Capabilities
+	f.Evidence = []string{
+		"referer=" + r.LinkPage,
+		"returned_to_referring_origin=true",
+		"note=the destination came from the browser's own Referer header; no forged request can demonstrate this",
+	}
+	f.Repro = "open " + r.LinkPage + " and click the link"
+	f.ProbeURL = r.Target
+
+	return f, true
 }

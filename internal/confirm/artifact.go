@@ -118,29 +118,37 @@ func buildHAR(target string, chain []Hop) []byte {
 	return raw
 }
 
-// WriteArtifacts saves a result's screenshot and HAR under dir, named by key.
-func WriteArtifacts(dir, key string, result Result) error {
+// WriteArtifacts saves a result's screenshot and HAR under dir, named by key,
+// and returns the file names it wrote so a finding can point at them.
+func WriteArtifacts(dir, key string, result Result) ([]string, error) {
 	if dir == "" || (result.Screenshot == nil && result.HAR == nil) {
-		return nil
+		return nil, nil
 	}
 
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
-		return fmt.Errorf("creating artifact directory: %w", err)
+		return nil, fmt.Errorf("creating artifact directory: %w", err)
 	}
 
-	if result.Screenshot != nil {
-		path := filepath.Join(dir, key+".png")
-		if err := os.WriteFile(path, result.Screenshot, filePerm); err != nil {
-			return fmt.Errorf("writing screenshot: %w", err)
+	written := []string{}
+
+	for _, artifact := range []struct {
+		data []byte
+		ext  string
+	}{
+		{result.Screenshot, ".png"},
+		{result.HAR, ".har"},
+	} {
+		if artifact.data == nil {
+			continue
 		}
-	}
 
-	if result.HAR != nil {
-		path := filepath.Join(dir, key+".har")
-		if err := os.WriteFile(path, result.HAR, filePerm); err != nil {
-			return fmt.Errorf("writing har: %w", err)
+		name := key + artifact.ext
+		if err := os.WriteFile(filepath.Join(dir, name), artifact.data, filePerm); err != nil {
+			return written, fmt.Errorf("writing %s: %w", name, err)
 		}
+
+		written = append(written, name)
 	}
 
-	return nil
+	return written, nil
 }
