@@ -4,6 +4,7 @@ package pool
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -21,7 +22,7 @@ func Run[T any](ctx context.Context, concurrency int, items []T, fn func(context
 		group.Go(func() (err error) {
 			defer func() {
 				if recovered := recover(); recovered != nil {
-					err = fmt.Errorf("worker panic: %v", recovered)
+					err = fmt.Errorf("worker panic: %v\n%s", recovered, debug.Stack())
 				}
 			}()
 
