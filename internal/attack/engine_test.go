@@ -2,8 +2,11 @@ package attack_test
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -195,6 +198,39 @@ func TestAttackResumeReturnsCompletedFindings(t *testing.T) {
 
 	assert.Len(t, second, len(first), "a resumed run must not lose findings")
 	assert.Equal(t, techniqueSet(first), techniqueSet(second))
+}
+
+// TestUnansweredProbesAreNotRecordedAsMisses is the other half of --resume.
+//
+// A probe that never got an answer is not evidence of anything. Writing it to
+// the checkpoint as a miss made it permanent: the attempt was skipped on
+// every later run, so an interrupted scan came back short and stayed short.
+// Nothing at all should be written for a host that does not answer.
+func TestUnansweredProbesAreNotRecordedAsMisses(t *testing.T) {
+	t.Parallel()
+
+	// A server that is already closed answers nothing, which is what a
+	// cancelled or dropped probe looks like to the engine.
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := dead.URL + "/a01?url=https://allowed.lab/"
+	dead.Close()
+
+	eng, _ := newEngine(t)
+	path := filepath.Join(t.TempDir(), "dead.ckpt")
+	store, err := checkpoint.Open(path)
+	require.NoError(t, err)
+
+	eng.SetCheckpoint(store)
+
+	findings, err := eng.Run(context.Background(), []string{url})
+	require.NoError(t, err)
+	assert.Empty(t, findings)
+	require.NoError(t, store.Close())
+
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: path is this test's own temp file.
+	require.NoError(t, err)
+	assert.Empty(t, strings.TrimSpace(string(raw)),
+		"a host that never answered must leave no verdict behind")
 }
 
 func techniqueSet(findings []model.Finding) map[string]struct{} {

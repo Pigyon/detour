@@ -3,6 +3,7 @@ package attack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -770,14 +771,14 @@ func (e *Engine) confirm(ctx context.Context, pr probe) (model.Finding, bool, er
 
 	pair, found, status, err := e.readDest(ctx, pr.probed, pr.extra, e.canary)
 	if err != nil {
-		return model.Finding{}, false, err
+		return model.Finding{}, false, skipUnanswered(err)
 	}
 
 	hit := found.reached(pair, e.canary)
 	if hit {
 		altPair, altFound, _, err := e.readDest(ctx, pr.altProbed, pr.altExtra, AltCanary(e.canary))
 		if err != nil {
-			return model.Finding{}, false, err
+			return model.Finding{}, false, skipUnanswered(err)
 		}
 
 		hit = altFound.reached(altPair, AltCanary(e.canary))
@@ -798,6 +799,17 @@ func (e *Engine) confirm(ctx context.Context, pr probe) (model.Finding, bool, er
 	}
 
 	return f, true, nil
+}
+
+// skipUnanswered turns an unanswered probe into no verdict at all, and leaves
+// every other error alone. The attempt is not recorded, so a later run makes
+// it again.
+func skipUnanswered(err error) error {
+	if errors.Is(err, errUnanswered) {
+		return nil
+	}
+
+	return err
 }
 
 // attemptKey identifies one attempt by the request it sends.
@@ -859,6 +871,15 @@ func (pr probe) mechanism() string {
 	return pr.payload.Mechanism
 }
 
+// errUnanswered means a probe produced no usable answer.
+//
+// It is not a verdict. An attempt that was never answered is neither a hit
+// nor a miss, and the difference matters: a miss is written to the checkpoint
+// and never tried again, so recording one here made a cancelled or flaky
+// probe a permanent "not vulnerable". An interrupted scan came back seven
+// findings short and stayed short on every later resume.
+var errUnanswered = errors.New("probe unanswered")
+
 func (e *Engine) readDest(ctx context.Context, raw string, extra http.Header, canary string) (resolve.Pair, dest, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
@@ -873,15 +894,21 @@ func (e *Engine) readDest(ctx context.Context, raw string, extra http.Header, ca
 
 	resp, err := e.client.Do(ctx, req)
 	if err != nil {
-		return resolve.Pair{}, dest{}, 0, nil
+		return resolve.Pair{}, dest{}, 0, errUnanswered
 	}
 
 	defer func() { _ = resp.Body.Close() }()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyScan))
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBodyScan))
 
 	if pair, found, ok := pickCanaryDest(raw, destValues(resp, body), canary); ok {
 		return pair, found, resp.StatusCode, nil
+	}
+
+	// A body that did not finish arriving cannot prove a destination is
+	// absent. What it proves is that this attempt is worth making again.
+	if readErr != nil {
+		return resolve.Pair{}, dest{}, resp.StatusCode, errUnanswered
 	}
 
 	return resolve.Pair{}, dest{}, resp.StatusCode, nil
