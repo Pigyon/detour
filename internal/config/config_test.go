@@ -117,3 +117,125 @@ func TestParseHeaders(t *testing.T) {
 		})
 	}
 }
+
+const destHost = "evil.example"
+
+func TestDestination(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  config.Config
+		want string
+	}{
+		{
+			name: "default is the google.com host",
+			cfg:  config.Config{Canary: config.DefaultCanary, RedirectTo: config.DefaultRedirectTo},
+			want: "google.com",
+		},
+		{
+			name: "a bare host with a path keeps only the host",
+			cfg:  config.Config{RedirectTo: destHost + "/path"},
+			want: destHost,
+		},
+		{
+			name: "userinfo is not the host",
+			cfg:  config.Config{RedirectTo: "user:pw@" + destHost},
+			want: destHost,
+		},
+		{
+			name: "a trailing dot is dropped",
+			cfg:  config.Config{RedirectTo: destHost + "."},
+			want: destHost,
+		},
+		{
+			name: "case is normalized",
+			cfg:  config.Config{RedirectTo: "HTTPS://" + "EVIL.EXAMPLE" + "/"},
+			want: destHost,
+		},
+		{
+			name: "a url is reduced to its host",
+			cfg:  config.Config{RedirectTo: "https://" + destHost + "/pwn?x=1"},
+			want: destHost,
+		},
+		{
+			name: "a bare host is taken as given",
+			cfg:  config.Config{RedirectTo: destHost},
+			want: destHost,
+		},
+		{
+			name: "a host and port drops the port",
+			cfg:  config.Config{RedirectTo: destHost + ":8443"},
+			want: destHost,
+		},
+		{
+			name: "the deprecated canary flag still wins when set",
+			cfg:  config.Config{Canary: "old.invalid", RedirectTo: config.DefaultRedirectTo},
+			want: "old.invalid",
+		},
+		{
+			name: "an unset canary does not override",
+			cfg:  config.Config{Canary: config.DefaultCanary, RedirectTo: "https://" + destHost + "/"},
+			want: destHost,
+		},
+		{
+			name: "everything empty falls back to a non-resolving name",
+			cfg:  config.Config{},
+			want: config.DefaultCanary,
+		},
+		{
+			name: "whitespace is not a destination",
+			cfg:  config.Config{RedirectTo: "   "},
+			want: config.DefaultCanary,
+		},
+		{
+			name: "a scheme with no host is not a destination",
+			cfg:  config.Config{RedirectTo: "https://"},
+			want: config.DefaultCanary,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, tt.cfg.Destination())
+		})
+	}
+}
+
+// TestUnmarshalRejectsBadDestination keeps a broken destination from starting a
+// run. An empty one switches the scope guard off for every host at once, which
+// is the worst possible way to fail.
+func TestUnmarshalRejectsBadDestination(t *testing.T) {
+	t.Parallel()
+
+	for _, raw := range []string{"   ", "https://", "?a=b", "/just/a/path", "nodots"} {
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+
+			v := config.NewViper()
+			v.Set("redirect-to", raw)
+
+			_, err := config.Unmarshal(v)
+			require.Error(t, err, "a destination of %q must not start a run", raw)
+		})
+	}
+}
+
+func TestUnmarshalAcceptsUsableDestinations(t *testing.T) {
+	t.Parallel()
+
+	for _, raw := range []string{"https://google.com", "google.com", "evil.example:8443", "localhost"} {
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+
+			v := config.NewViper()
+			v.Set("redirect-to", raw)
+
+			cfg, err := config.Unmarshal(v)
+			require.NoError(t, err)
+			assert.NotEmpty(t, cfg.Destination())
+		})
+	}
+}
