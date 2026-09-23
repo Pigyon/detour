@@ -186,14 +186,23 @@ func readSitemap(ctx context.Context, client Doer, endpoint string) (locs, child
 		return nil, nil, fmt.Errorf("decoding sitemap %s: %w", endpoint, err)
 	}
 
+	// A sitemap is a file on the target, so its contents are input. Every
+	// other source here resolves and validates what it found; this one used to
+	// append the text verbatim, which let a javascript: or file:// entry into
+	// the corpus and left a legally relative <loc> unresolved and useless.
+	root, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parsing sitemap url %s: %w", endpoint, err)
+	}
+
 	for _, item := range doc.URLs {
-		if loc := strings.TrimSpace(item.Loc); loc != "" {
+		if loc, ok := resolveAgainst(root, item.Loc); ok {
 			locs = append(locs, loc)
 		}
 	}
 
 	for _, item := range doc.Sitemaps {
-		if loc := strings.TrimSpace(item.Loc); loc != "" {
+		if loc, ok := resolveAgainst(root, item.Loc); ok {
 			children = append(children, loc)
 		}
 	}
