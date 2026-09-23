@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/nedlir/detour/internal/checkpoint"
+	"github.com/nedlir/detour/internal/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -67,6 +68,39 @@ func FuzzLoad(f *testing.F) {
 			return
 		}
 
-		_ = checkpoint.Load(strings.NewReader(raw))
+		_, _ = checkpoint.Load(strings.NewReader(raw))
 	})
+}
+
+// TestRecoverReturnsTheFinding is the regression for a resumed run losing
+// everything the interrupted one had proved.
+func TestRecoverReturnsTheFinding(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "run.ckpt")
+
+	store, err := checkpoint.Open(path)
+	require.NoError(t, err)
+
+	f := model.NewFinding()
+	f.TechniqueID = "OR-A01"
+	f.Payload = "https://allowed.example@canary.invalid"
+
+	require.NoError(t, store.RecordHit("https://app.example/r", f.Payload, f.TechniqueID, f))
+	require.NoError(t, store.RecordAttempt("https://app.example/r", "miss", "OR-A07", false))
+	require.NoError(t, store.Close())
+
+	reopened, err := checkpoint.Open(path)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = reopened.Close() })
+
+	got, ok := reopened.Recover("https://app.example/r", f.Payload, f.TechniqueID)
+	require.True(t, ok, "a recorded hit must come back")
+	assert.Equal(t, f.TechniqueID, got.TechniqueID)
+	assert.Equal(t, f.Payload, got.Payload)
+
+	// An attempt that found nothing has nothing to hand back.
+	_, ok = reopened.Recover("https://app.example/r", "miss", "OR-A07")
+	assert.False(t, ok)
 }

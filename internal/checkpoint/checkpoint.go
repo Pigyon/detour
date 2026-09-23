@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"sync"
+
+	"github.com/nedlir/detour/internal/model"
 )
 
 // SchemaVersion is written on every checkpoint record.
@@ -16,12 +18,17 @@ const SchemaVersion = "1"
 const maxLine = 1 << 20
 
 // Record is one attempted candidate + payload and its verdict.
+//
+// A hit carries the finding it produced. Without it a resumed run skips the
+// work and has nothing to show for it, so an interrupted scan comes back
+// reporting zero and overwrites the report that had the answers.
 type Record struct {
-	SchemaVersion string `json:"schema_version"`
-	Source        string `json:"source"`
-	Payload       string `json:"payload"`
-	Technique     string `json:"technique"`
-	Hit           bool   `json:"hit"`
+	SchemaVersion string         `json:"schema_version"`
+	Source        string         `json:"source"`
+	Payload       string         `json:"payload"`
+	Technique     string         `json:"technique"`
+	Hit           bool           `json:"hit"`
+	Finding       *model.Finding `json:"finding,omitempty"`
 }
 
 // Store is a crash-safe, append-only jsonl checkpoint.
@@ -29,11 +36,14 @@ type Store struct {
 	mu   sync.Mutex
 	file *os.File
 	seen map[string]struct{}
+	// done holds the findings earlier runs already proved, keyed the same way
+	// as seen, so a resumed run can hand them back instead of losing them.
+	done map[string]model.Finding
 }
 
 // Open loads existing records from path and prepares it for appends.
 func Open(path string) (*Store, error) {
-	seen, err := loadPath(path)
+	seen, done, err := loadPath(path)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +53,21 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("opening checkpoint: %w", err)
 	}
 
-	return &Store{file: file, seen: seen}, nil
+	return &Store{file: file, seen: seen, done: done}, nil
+}
+
+// Recover returns the finding an earlier run recorded for this attempt.
+func (s *Store) Recover(source, payload, technique string) (model.Finding, bool) {
+	if s == nil {
+		return model.Finding{}, false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	f, ok := s.done[key(source, payload, technique)]
+
+	return f, ok
 }
 
 // Close flushes and closes the checkpoint file.
@@ -77,6 +101,15 @@ func (s *Store) Seen(source, payload, technique string) bool {
 
 // RecordAttempt appends a verdict unless that attempt is already stored.
 func (s *Store) RecordAttempt(source, payload, technique string, hit bool) error {
+	return s.record(source, payload, technique, hit, nil)
+}
+
+// RecordHit appends a verdict together with the finding it produced.
+func (s *Store) RecordHit(source, payload, technique string, f model.Finding) error {
+	return s.record(source, payload, technique, true, &f)
+}
+
+func (s *Store) record(source, payload, technique string, hit bool, f *model.Finding) error {
 	if s == nil {
 		return nil
 	}
@@ -95,6 +128,7 @@ func (s *Store) RecordAttempt(source, payload, technique string, hit bool) error
 		Payload:       payload,
 		Technique:     technique,
 		Hit:           hit,
+		Finding:       f,
 	}
 
 	if err := json.NewEncoder(s.file).Encode(rec); err != nil {
@@ -107,15 +141,21 @@ func (s *Store) RecordAttempt(source, payload, technique string, hit bool) error
 
 	s.seen[k] = struct{}{}
 
+	if f != nil {
+		s.done[k] = *f
+	}
+
 	return nil
 }
 
-// Load parses records from r. Truncated or invalid lines are skipped.
-func Load(r io.Reader) map[string]struct{} {
+// Load parses records from r, returning the attempts already made and the
+// findings they produced. Truncated or invalid lines are skipped.
+func Load(r io.Reader) (seen map[string]struct{}, done map[string]model.Finding) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLine)
 
-	seen := map[string]struct{}{}
+	seen = map[string]struct{}{}
+	done = map[string]model.Finding{}
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -132,25 +172,32 @@ func Load(r io.Reader) map[string]struct{} {
 			continue
 		}
 
-		seen[key(rec.Source, rec.Payload, rec.Technique)] = struct{}{}
+		k := key(rec.Source, rec.Payload, rec.Technique)
+		seen[k] = struct{}{}
+
+		if rec.Finding != nil {
+			done[k] = *rec.Finding
+		}
 	}
 
-	return seen
+	return seen, done
 }
 
-func loadPath(path string) (map[string]struct{}, error) {
+func loadPath(path string) (map[string]struct{}, map[string]model.Finding, error) {
 	file, err := os.Open(path) //nolint:gosec // G304: path is the operator-supplied --resume file.
 	if err != nil {
 		if os.IsNotExist(err) {
-			return map[string]struct{}{}, nil
+			return map[string]struct{}{}, map[string]model.Finding{}, nil
 		}
 
-		return nil, fmt.Errorf("reading checkpoint: %w", err)
+		return nil, nil, fmt.Errorf("reading checkpoint: %w", err)
 	}
 
 	defer func() { _ = file.Close() }()
 
-	return Load(file), nil
+	seen, done := Load(file)
+
+	return seen, done, nil
 }
 
 func key(source, payload, technique string) string {
