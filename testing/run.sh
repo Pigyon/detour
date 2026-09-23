@@ -49,6 +49,15 @@ atleast() {
 # findings COUNT-FROM-STDERR: detour prints "N findings" as its last stderr line
 findings() { "$@" 2>&1 >/dev/null | tail -1 | awk '{print $1}'; }
 
+# elapsed_ms CMD...: how long CMD took, in milliseconds.
+elapsed_ms() {
+  local t0 t1
+  t0=$(date +%s%3N)
+  "$@" >/dev/null 2>&1
+  t1=$(date +%s%3N)
+  echo $((t1 - t0))
+}
+
 # says NAME PATTERN CMD...: run CMD and require PATTERN in what it printed.
 #
 # Not `cmd | grep -q`: under pipefail a command that exits non-zero fails the
@@ -382,11 +391,15 @@ s2=$("$D" harvest "http://127.0.0.1:${SITE_PORT}/" --scope-file <(echo 127.0.0.1
 if [ "${s2:-0}" -gt "${s1:-0}" ]; then ok "F16 --crawl adds a source"; else bad "F16 --crawl"; fi
 
 # --concurrency has to matter for a single URL, which is the targeted case.
-t1=$( { time -p "$D" attack <(echo "$LAB/a01?url=https://allowed.lab/") --scope-file "$OUT/lab.scope" \
-        --concurrency 1 --rate 1000 --delay 30ms >/dev/null 2>&1 ; } 2>&1 | awk '/real/{print int($2*1000)}')
-t8=$( { time -p "$D" attack <(echo "$LAB/a01?url=https://allowed.lab/") --scope-file "$OUT/lab.scope" \
-        --concurrency 16 --rate 1000 --delay 30ms >/dev/null 2>&1 ; } 2>&1 | awk '/real/{print int($2*1000)}')
-if [ "${t8:-0}" -lt "${t1:-0}" ]; then ok "F17 --concurrency speeds one url (${t1}ms to ${t8}ms)"; else bad "F17 --concurrency (${t1}ms to ${t8}ms)"; fi
+t1=$(elapsed_ms "$D" attack <(echo "$LAB/a01?url=https://allowed.lab/") --scope-file "$OUT/lab.scope" \
+       --concurrency 1 --rate 1000 --delay 30ms)
+t8=$(elapsed_ms "$D" attack <(echo "$LAB/a01?url=https://allowed.lab/") --scope-file "$OUT/lab.scope" \
+       --concurrency 16 --rate 1000 --delay 30ms)
+if [ "$t8" -lt "$t1" ] && [ "$t1" -lt 300000 ]; then
+  ok "F17 --concurrency speeds one url (${t1}ms to ${t8}ms)"
+else
+  bad "F17 --concurrency (${t1}ms to ${t8}ms)"
+fi
 
 "$D" attack <(echo "$LAB/a01?url=https://allowed.lab/") --scope-file "$OUT/lab.scope" \
   --cookies-file "$OUT/cookies.txt" --header 'X-Test: yes' --rate 200 >/dev/null 2>&1 \
@@ -415,9 +428,17 @@ fi
 kill "$HID_PID" 2>/dev/null; HID_PID=""
 
 # F10: the pacing flags have to actually pace.
-q0=$( { time -p "$D" attack <(echo "$LAB/a01?url=https://allowed.lab/") --scope-file "$OUT/lab.scope" --rate 200 --concurrency 8 >/dev/null 2>&1 ; } 2>&1 | awk '/real/{print int($2)}')
-q1=$( { time -p "$D" attack <(echo "$LAB/a01?url=https://allowed.lab/") --scope-file "$OUT/lab.scope" --rate 2 --delay 200ms --concurrency 1 >/dev/null 2>&1 ; } 2>&1 | awk '/real/{print int($2)}')
-if [ "${q1:-0}" -gt "${q0:-0}" ]; then ok "F10 --rate and --delay slow the run (${q0}s to ${q1}s)"; else bad "F10 pacing (${q0}s to ${q1}s)"; fi
+#
+# Timed from the shell rather than parsed out of `time`, and bounded at both
+# ends. A run reported once as 10444s, which is longer than the whole suite
+# takes: a check that passes on a nonsense measurement cannot catch anything.
+q0=$(elapsed_ms "$D" attack <(echo "$LAB/a01?url=https://allowed.lab/") --scope-file "$OUT/lab.scope" --rate 200 --concurrency 8)
+q1=$(elapsed_ms "$D" attack <(echo "$LAB/a01?url=https://allowed.lab/") --scope-file "$OUT/lab.scope" --rate 2 --delay 200ms --concurrency 1)
+if [ "$q1" -gt "$q0" ] && [ "$q1" -lt 300000 ]; then
+  ok "F10 --rate and --delay slow the run (${q0}ms to ${q1}ms)"
+else
+  bad "F10 pacing (${q0}ms to ${q1}ms)"
+fi
 
 # E2: when every archive is unreachable, harvest has to say so rather than
 # return an empty list that reads like a clean result.
@@ -433,6 +454,22 @@ for c in harvest select js; do
   if [ -n "$(ls -A "$OUT/out-$c" 2>/dev/null)" ]; then ok "F15 $c --out writes files"; else bad "F15 $c --out"; fi
 done
 [ -n "$(ls -A "$OUT/lab" 2>/dev/null)" ] && ok "F15 attack --out writes files" || bad "F15 attack --out"
+
+# E8: an interrupt without --resume must still report what it proved.
+#
+# This is the case E7 hides: with a checkpoint the findings survive in the
+# file, so a run that threw away everything in memory still looked correct on
+# the next pass. Without one, Ctrl-C used to cost the entire scan.
+rm -rf "$OUT/stopped"
+"$D" attack "$OUT/lab.txt" --scope-file "$OUT/lab.scope" --out "$OUT/stopped" \
+  --rate 500 --concurrency 8 > "$OUT/stopped.out" 2>"$OUT/stopped.err" &
+SP=$!
+sleep 8; kill -INT "$SP" 2>/dev/null; wait "$SP" 2>/dev/null; rc=$?
+atleast "E8 an interrupt still reports its findings" 1 "$(wc -l < "$OUT/stopped.out")"
+says "E8 an interrupt says it stopped early" 'stopped early' cat "$OUT/stopped.err"
+[ -s "$OUT/stopped/REPORT.md" ] && ok "E8 an interrupt still writes the report" || bad "E8 interrupt wrote no report"
+check "E8 an interrupt is not an error exit" 0 "$rc"
+denies "E8 a stopped run does not double-wrap its reason" 'worker pool: worker pool' cat "$OUT/stopped.err"
 
 # E7: an interrupted run has to leave a checkpoint the next one can use.
 rm -f "$OUT/int.ckpt"
