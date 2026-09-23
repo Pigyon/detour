@@ -109,6 +109,8 @@ func runAttack(cmd *cobra.Command, source string, opts attackOptions) error {
 		return err
 	}
 
+	reportCoverage(cmd, eng.Coverage())
+
 	findings = append(findings, maybeNuclei(cmd, cfg, urls, opts.nuclei)...)
 	findings = maybeConfirm(cmd, cfg, findings, opts.headless, opts.outDir)
 	findings = maybeEscalate(findings, opts.escalate)
@@ -129,6 +131,17 @@ func attachCheckpoint(eng *attack.Engine, resume string) (func(), error) {
 	eng.SetCheckpoint(store)
 
 	return func() { _ = store.Close() }, nil
+}
+
+// reportCoverage says what the run touched, so a count of zero can be read.
+func reportCoverage(cmd *cobra.Command, c attack.Coverage) {
+	if c.Sources == 0 {
+		return
+	}
+
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+		"covered: %d of %d urls answered, %d already redirect, %d parameters probed\n",
+		c.Reachable, c.Sources, c.Redirectors, c.Params)
 }
 
 func writeAttackOutput(cmd *cobra.Command, findings []model.Finding, filter, outDir string) error {

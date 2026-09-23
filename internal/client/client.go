@@ -36,6 +36,14 @@ type Client struct {
 	delay     time.Duration
 	timeout   time.Duration
 	limiters  sync.Map
+	// inFlight bounds how many requests are on the wire at once.
+	//
+	// The bound belongs here rather than in a worker pool, because this is the
+	// one place every request passes through. A pool over source URLs cannot
+	// enforce it: one URL fans out into dozens of payloads, so a limit on
+	// sources bounds goroutines and not traffic, and --concurrency then does
+	// nothing at all for a single URL.
+	inFlight chan struct{}
 }
 
 // New builds a client from cfg. Credentials are attached only after the guard
@@ -112,11 +120,32 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 
 	applyCredentials(req, c.extra, c.cookies)
 
+	release, err := c.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	defer release()
+
 	if err := c.wait(ctx, host); err != nil {
 		return nil, err
 	}
 
 	return c.doWithRetry(ctx, req)
+}
+
+// acquire takes an in-flight slot, returning the function that gives it back.
+func (c *Client) acquire(ctx context.Context) (func(), error) {
+	if c.inFlight == nil {
+		return func() {}, nil
+	}
+
+	select {
+	case c.inFlight <- struct{}{}:
+		return func() { <-c.inFlight }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("waiting for an in-flight slot: %w", ctx.Err())
+	}
 }
 
 func (c *Client) wait(ctx context.Context, host string) error {

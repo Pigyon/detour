@@ -286,6 +286,22 @@ type blobContext struct {
 	strategy  decode.Strategy
 }
 
+// Coverage is what a run actually touched, so a count of zero can be read.
+//
+// "0 findings" on its own says nothing: it is the same output whether the
+// target was clean, unreachable, or had no parameter worth probing. These
+// numbers separate those cases without the operator having to rerun at debug.
+type Coverage struct {
+	// Sources is how many URLs were handed to the engine.
+	Sources int
+	// Reachable is how many of them answered the baseline request.
+	Reachable int
+	// Redirectors is how many already answered with a destination.
+	Redirectors int
+	// Params is how many distinct parameters were probed.
+	Params int
+}
+
 // Engine probes candidates with the built-in payload set.
 type Engine struct {
 	client       *client.Client
@@ -293,6 +309,8 @@ type Engine struct {
 	keyword      string
 	payloads     []payload.Payload
 	concurrency  int
+	coverage     Coverage
+	coverageMu   sync.Mutex
 	checkpoint   *checkpoint.Store
 	chainTargets []ChainTarget
 	trustedHosts []string
@@ -326,6 +344,31 @@ func New(c *client.Client, canary, keyword string, concurrency int, payloads []p
 		payloads:    payloads,
 		concurrency: concurrency,
 	}
+}
+
+// Coverage reports what the last Run touched.
+func (e *Engine) Coverage() Coverage {
+	e.coverageMu.Lock()
+	defer e.coverageMu.Unlock()
+
+	return e.coverage
+}
+
+func (e *Engine) noteCoverage(reachable, redirector bool, params int) {
+	e.coverageMu.Lock()
+	defer e.coverageMu.Unlock()
+
+	e.coverage.Sources++
+
+	if reachable {
+		e.coverage.Reachable++
+	}
+
+	if redirector {
+		e.coverage.Redirectors++
+	}
+
+	e.coverage.Params += params
 }
 
 // SetCheckpoint records attempts so --resume can skip completed work.
@@ -456,6 +499,7 @@ func (e *Engine) attackOne(ctx context.Context, raw string) ([]model.Finding, er
 	redirector, reachable := e.baseline(ctx, raw)
 	if !reachable {
 		slog.Debug("source did not answer, skipping its payloads", "url", raw)
+		e.noteCoverage(false, false, 0)
 
 		return nil, nil
 	}
@@ -463,6 +507,8 @@ func (e *Engine) attackOne(ctx context.Context, raw string) ([]model.Finding, er
 	if redirector {
 		parsed = markRedirector(parsed)
 	}
+
+	e.noteCoverage(true, redirector, len(targetParamsOn(parsed.Query(), redirector)))
 
 	hits, err := e.attackBlobs(ctx, raw)
 	if err != nil {
@@ -473,32 +519,17 @@ func (e *Engine) attackOne(ctx context.Context, raw string) ([]model.Finding, er
 	hits = append(hits, e.attackNestedRedirectURI(ctx, parsed)...)
 	hits = append(hits, e.attackFetcherChain(ctx, parsed)...)
 
-	seen := map[string]struct{}{}
-
-	for _, p := range e.payloads {
-		switch p.Mechanism {
-		case mechHeader:
-			f, ok, err := e.probeHeader(ctx, raw, p)
-			if err != nil {
-				return nil, err
-			}
-
-			if ok {
-				hits = append(hits, f)
-			}
-		case mechCRLF, mechPath:
-			f, ok, err := e.probeCRLF(ctx, raw, p)
-			if err != nil {
-				return nil, err
-			}
-
-			if ok {
-				hits = append(hits, f)
-			}
-		default:
-			hits = append(hits, e.attackParams(ctx, parsed, p, seen)...)
-		}
+	// The payloads for one source run together. A pool over source URLs alone
+	// leaves a single URL entirely serial, which is the common shape of a
+	// targeted run and the case where --concurrency appeared to do nothing.
+	// The client bounds what is actually on the wire, so fanning out here
+	// cannot exceed the operator's limit.
+	payloadHits, err := e.runPayloads(ctx, raw, parsed)
+	if err != nil {
+		return nil, err
 	}
+
+	hits = append(hits, payloadHits...)
 
 	// The chained class is what is left when the direct route is refused, so
 	// it runs last and only where nothing else got through.
@@ -518,6 +549,82 @@ func crackedParams(hits []model.Finding) map[string]struct{} {
 	}
 
 	return out
+}
+
+// runPayloads fires every payload at one source, concurrently.
+func (e *Engine) runPayloads(ctx context.Context, raw string, parsed *url.URL) ([]model.Finding, error) {
+	var (
+		mu   sync.Mutex
+		hits []model.Finding
+		seen = map[string]struct{}{}
+	)
+
+	// claim reserves one param and payload combination, so two workers cannot
+	// send the same request.
+	claim := func(key string) bool {
+		mu.Lock()
+		defer mu.Unlock()
+
+		if _, dup := seen[key]; dup {
+			return false
+		}
+
+		seen[key] = struct{}{}
+
+		return true
+	}
+
+	collect := func(found ...model.Finding) {
+		if len(found) == 0 {
+			return
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		hits = append(hits, found...)
+	}
+
+	err := pool.Run(ctx, e.concurrency, e.payloads, func(ctx context.Context, p payload.Payload) error {
+		switch p.Mechanism {
+		case mechHeader:
+			f, ok, err := e.probeHeader(ctx, raw, p)
+			if err != nil {
+				return err
+			}
+
+			if ok {
+				collect(f)
+			}
+		case mechCRLF, mechPath:
+			f, ok, err := e.probeCRLF(ctx, raw, p)
+			if err != nil {
+				return err
+			}
+
+			if ok {
+				collect(f)
+			}
+		default:
+			collect(e.attackParams(ctx, parsed, p, claim)...)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// A stable order, so two runs of the same scan report the same thing.
+	sort.SliceStable(hits, func(i, j int) bool {
+		if hits[i].TechniqueID != hits[j].TechniqueID {
+			return hits[i].TechniqueID < hits[j].TechniqueID
+		}
+
+		return hits[i].Payload < hits[j].Payload
+	})
+
+	return hits, nil
 }
 
 func (e *Engine) attackKeyword(ctx context.Context, raw string) ([]model.Finding, error) {
@@ -552,7 +659,9 @@ func (e *Engine) attackKeyword(ctx context.Context, raw string) ([]model.Finding
 	return hits, nil
 }
 
-func (e *Engine) attackParams(ctx context.Context, parsed *url.URL, p payload.Payload, seen map[string]struct{}) []model.Finding {
+func (e *Engine) attackParams(
+	ctx context.Context, parsed *url.URL, p payload.Payload, claim func(string) bool,
+) []model.Finding {
 	hits := []model.Finding{}
 	query := parsed.Query()
 
@@ -575,12 +684,9 @@ func (e *Engine) attackParams(ctx context.Context, parsed *url.URL, p payload.Pa
 		for _, trusted := range trustedHosts(parsed, current, e.trustedHosts) {
 			expanded := payload.Expand(p, e.canary, trusted, current)
 
-			key := actual + "\x00" + expanded
-			if _, dup := seen[key]; dup {
+			if !claim(actual + "\x00" + expanded) {
 				continue
 			}
-
-			seen[key] = struct{}{}
 
 			altExpanded := payload.Expand(p, AltCanary(e.canary), trusted, current)
 

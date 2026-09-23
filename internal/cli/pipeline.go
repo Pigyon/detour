@@ -85,6 +85,8 @@ func runPipeline(cmd *cobra.Command, target string, flags *reconFlags, headless 
 		return err
 	}
 
+	reportCoverage(cmd, eng.Coverage())
+
 	// The client-side class is only reachable through the js stage: without it
 	// a run produces no OR-C01 or OR-C02 candidate, and the browser stage only
 	// promotes candidates that already exist.
