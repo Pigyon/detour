@@ -15,6 +15,7 @@ import (
 const (
 	mechHeader = "header"
 	techA01    = "OR-A01"
+	statusLine = "status 302"
 )
 
 func TestParseFilter(t *testing.T) {
@@ -94,7 +95,7 @@ func TestWrite(t *testing.T) {
 	f.Candidate.SourceURL = "https://app.example/a?url=https://allowed.lab/"
 	f.Capabilities.RedirectExternal = true
 	f.Capabilities.InputControlled = true
-	f.Evidence = []string{"status 302"}
+	f.Evidence = []string{statusLine}
 
 	require.NoError(t, report.Write(dir, []model.Finding{f}))
 

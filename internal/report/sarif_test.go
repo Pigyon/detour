@@ -65,7 +65,7 @@ func sampleFindings() []model.Finding {
 	a.Payload = "https://allowed.lab@canary.invalid"
 	a.Verdict = model.VerdictConfirmed
 	a.ProbeURL = "https://a.lab/go?url=https%3A%2F%2Fallowed.lab%40canary.invalid"
-	a.Evidence = []string{"status 302", "Location: https://allowed.lab@canary.invalid"}
+	a.Evidence = []string{statusLine, "Location: https://allowed.lab@canary.invalid"}
 	a.Candidate = model.NewNavigationCandidate("https://a.lab/go", model.RepresentationQueryParameter)
 	a.Candidate.ParamName = paramURL
 	a.Capabilities.RedirectExternal = true

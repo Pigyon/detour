@@ -20,7 +20,7 @@ func blobFinding() model.Finding {
 	f.Candidate.SourceURL = "https://t.example/click/BBBB.html"
 	f.Candidate.DecoderChain = []model.Decoder{{Kind: "base64:url"}, {Kind: "zlib"}, {Kind: "json"}}
 	f.Evidence = []string{
-		"status 302",
+		statusLine,
 		"Location: https://canary.invalid",
 		"blob_field=$[4]",
 		"blob_strategy=preserved-envelope",
@@ -57,7 +57,7 @@ func TestRenderLeavesPlainFindingsAlone(t *testing.T) {
 	f.TechniqueID = techA01
 	f.Mechanism = "query"
 	f.Candidate.SourceURL = "https://t.example/go?url=x"
-	f.Evidence = []string{"status 302", "Location: https://canary.invalid"}
+	f.Evidence = []string{statusLine, "Location: https://canary.invalid"}
 
 	out := report.Render(f)
 
