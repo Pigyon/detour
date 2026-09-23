@@ -17,10 +17,9 @@ import (
 
 func newConfirmCmd() *cobra.Command {
 	var (
-		list     string
-		outDir   string
-		headless bool
-		referer  string
+		list    string
+		outDir  string
+		referer string
 	)
 
 	cmd := &cobra.Command{
@@ -31,26 +30,21 @@ func newConfirmCmd() *cobra.Command {
 			"the destination recorded on a finding is the captured intent, never a page that loaded.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runConfirm(cmd, list, outDir, referer, headless)
+			return runConfirm(cmd, list, outDir, referer)
 		},
 	}
 
 	cmd.Flags().StringVarP(&list, "list", "l", "", "findings.jsonl to confirm, or - for stdin")
 	cmd.Flags().StringVar(&outDir, "out", "", "write promoted findings plus screenshots and HARs here")
-	cmd.Flags().BoolVar(&headless, "headless", true, "drive a headless browser (the only supported mode)")
 	cmd.Flags().StringVar(&referer, "referer-test", "", "run the referer redirect test against this URL instead")
 
 	return cmd
 }
 
-func runConfirm(cmd *cobra.Command, list, outDir, referer string, headless bool) error {
+func runConfirm(cmd *cobra.Command, list, outDir, referer string) error {
 	cfg, ok := config.FromContext(cmd.Context())
 	if !ok {
 		return errors.New("config not loaded")
-	}
-
-	if !headless {
-		return errors.New("confirm needs --headless; there is no other way to prove a browser navigates")
 	}
 
 	confirmer, err := newConfirmer(cfg, outDir)
@@ -59,7 +53,7 @@ func runConfirm(cmd *cobra.Command, list, outDir, referer string, headless bool)
 	}
 
 	if referer != "" {
-		return runRefererTest(cmd, confirmer, referer)
+		return runRefererTest(cmd, confirmer, referer, outDir)
 	}
 
 	if list == "" {
@@ -102,7 +96,7 @@ func newConfirmer(cfg config.Config, outDir string) (*confirm.Confirmer, error) 
 	}
 
 	return confirm.New(guard, confirm.Options{
-		Canary:      cfg.Canary,
+		Canary:      cfg.Destination(),
 		Timeout:     cfg.Timeout * browserTimeoutFactor,
 		Headers:     headers,
 		Cookies:     cookies,
@@ -149,7 +143,7 @@ func writeConfirmOutput(cmd *cobra.Command, findings []model.Finding, summary co
 	return err
 }
 
-func runRefererTest(cmd *cobra.Command, confirmer *confirm.Confirmer, target string) error {
+func runRefererTest(cmd *cobra.Command, confirmer *confirm.Confirmer, target, outDir string) error {
 	result, err := confirmer.RefererTest(cmd.Context(), target)
 	if err != nil {
 		return err
@@ -160,6 +154,17 @@ func runRefererTest(cmd *cobra.Command, confirmer *confirm.Confirmer, target str
 
 	if err := enc.Encode(result); err != nil {
 		return fmt.Errorf("writing referer result: %w", err)
+	}
+
+	// The result document stays on stdout, because that is what callers parse.
+	// The finding goes to the output directory.
+	finding, ok := result.Finding()
+	if !ok || outDir == "" {
+		return nil
+	}
+
+	if err := report.WriteVersion(outDir, []model.Finding{finding}, version); err != nil {
+		return err
 	}
 
 	return nil

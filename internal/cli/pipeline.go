@@ -20,6 +20,8 @@ import (
 	"github.com/nedlir/detour/internal/escalate"
 	"github.com/nedlir/detour/internal/js"
 	"github.com/nedlir/detour/internal/model"
+	"github.com/nedlir/detour/internal/nuclei"
+	"github.com/nedlir/detour/internal/resolve"
 	"github.com/spf13/cobra"
 )
 
@@ -50,23 +52,91 @@ func runPipeline(cmd *cobra.Command, target string, flags *reconFlags, headless 
 		return errors.New("nothing to attack: no injection points survived selection")
 	}
 
-	eng := attack.New(c, cfg.Canary, "", cfg.Concurrency, nil)
+	// --passive says detour never touches the target, and the attack engine is
+	// the stage that spends requests on payloads. Running it anyway made the
+	// flag a lie, which matters most to the operator who set it because their
+	// testing window had closed.
+	if flags.passive {
+		return writeAttackOutput(cmd, passiveFindings(cmd, urls, flags), flags.filter, flags.outDir)
+	}
+
+	// The js stage runs first. It is the only stage that can read what a
+	// validator trusts, and running it after the attack meant the answer
+	// arrived too late for the payloads that needed it.
+	clientSide, allowed := jsFindings(cmd, c, urls, flags)
+
+	eng := attack.New(c, cfg.Destination(), flags.keyword, cfg.Concurrency, nil)
+	eng.SetTrustedHosts(allowed)
+
+	closer, err := attachCheckpoint(eng, flags.resume)
+	if err != nil {
+		return err
+	}
+
+	defer closer()
+
+	// A redirector that only accepts its own host is completed by another
+	// redirector on that host, and selection has already found which
+	// endpoints those are.
+	eng.SetChainTargets(attack.ChainTargetsFrom(urls))
 
 	findings, err := eng.Run(cmd.Context(), urls)
 	if err != nil {
 		return err
 	}
 
-	// The client-side class is only reachable through the JS stage. Without
-	// it a pipeline run cannot produce an OR-C01 or OR-C02 candidate, and the
-	// browser stage only ever promotes candidates that already exist.
-	findings = append(findings, jsFindings(cmd, c, urls, flags)...)
+	// The client-side class is only reachable through the js stage: without it
+	// a run produces no OR-C01 or OR-C02 candidate, and the browser stage only
+	// promotes candidates that already exist.
+	findings = append(findings, clientSide...)
+	findings = append(findings, maybeNuclei(cmd, cfg, urls, flags.nuclei)...)
 
 	findings = maybeConfirm(cmd, cfg, findings, headless, flags.outDir)
 	findings = maybeEscalate(findings, flags.escalate)
 
-	return writeAttackOutput(cmd, findings, "", flags.outDir)
+	return writeAttackOutput(cmd, findings, flags.filter, flags.outDir)
 }
+
+// passiveFindings reports what a run can know without sending the target a
+// single payload: the selected injection points, and nothing claimed about
+// them.
+func passiveFindings(cmd *cobra.Command, urls []string, flags *reconFlags) []model.Finding {
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+		"passive: %d injection points selected, no payloads sent\n", len(urls))
+
+	return maybeEscalate(nil, flags.escalate)
+}
+
+// maybeNuclei runs an installed nuclei binary over the same urls.
+//
+// It is a second opinion, so nothing about the run depends on it: a missing
+// binary is reported once and the findings detour produced itself stand
+// unchanged. nuclei inherits the operator's rate limit and proxy so it cannot
+// be louder than the run that invoked it.
+func maybeNuclei(cmd *cobra.Command, cfg config.Config, urls []string, enabled bool) []model.Finding {
+	if !enabled || len(urls) == 0 {
+		return nil
+	}
+
+	found, err := nuclei.Run(cmd.Context(), nuclei.Options{
+		RateLimit: int(cfg.Rate),
+		Timeout:   cfg.Timeout * nucleiTimeoutFactor,
+		Proxy:     cfg.Proxy,
+	}, urls)
+	if err != nil {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "nuclei: skipped (%v)\n", err)
+
+		return nil
+	}
+
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "nuclei: %d results\n", len(found))
+
+	return found
+}
+
+// nucleiTimeoutFactor stretches the per-request timeout into a budget for a
+// whole external scan.
+const nucleiTimeoutFactor = 60
 
 // maybeEscalate attaches escalation capabilities when asked.
 //
@@ -92,13 +162,14 @@ func jsFindings(
 	c *client.Client,
 	urls []string,
 	flags *reconFlags,
-) []model.Finding {
+) ([]model.Finding, []string) {
 	if !flags.js || flags.passive || len(urls) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	fetcher := &httpFetcher{client: c}
 	out := []model.Finding{}
+	allowed := []string{}
 	seen := map[string]struct{}{}
 
 	for _, raw := range urls {
@@ -121,13 +192,17 @@ func jsFindings(
 		}
 
 		out = append(out, report.Findings()...)
+
+		// The hosts a guard trusts are the ones the allowlist-bypass payloads
+		// have to wear. This stage is the only place they are discoverable.
+		allowed = append(allowed, report.Allowlists()...)
 	}
 
 	if len(out) > 0 {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "js: %d client-side candidates from %d pages\n", len(out), len(seen))
 	}
 
-	return out
+	return out, allowed
 }
 
 // withoutQuery reduces a selected URL to the page that serves it. The scripts
@@ -170,8 +245,23 @@ func pipelineURLs(
 		slog.Debug("harvest source failed", "reason", msg)
 	}
 
+	// Every source failing looks exactly like a target with nothing to find,
+	// and at the default log level it printed nothing at all. An operator
+	// reading "0 urls" deserves to know whether that is the answer or an
+	// outage.
+	if len(harvested.URLs) == 0 && len(harvested.Errors) > 0 {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+			"harvest: every source failed (%d errors); run with --log-level debug for detail\n",
+			len(harvested.Errors))
+	}
+
 	_, base := splitTarget(target)
 	raw = append(raw, base)
+
+	// Archives answer with whatever they have indexed, and for some targets
+	// most of it belongs to somebody else. Without this filter a run attacks
+	// third parties, which is the one mistake that ends a bounty account.
+	raw = onTarget(raw, domain)
 
 	selected := selectFrom(raw, flags.vendorOnly)
 
@@ -195,6 +285,32 @@ func pipelineURLs(
 		"harvested %d urls, selected %d injection points\n", len(harvested.URLs), len(urls))
 
 	return urls
+}
+
+// onTarget keeps only the URLs that belong to the target's own domain.
+//
+// A scope file is the hard boundary and is checked again on every request, but
+// it is optional, and an operator who forgot one should still not have their
+// run aimed at whatever an archive happened to return.
+func onTarget(urls []string, domain string) []string {
+	if domain == "" {
+		return urls
+	}
+
+	out := make([]string, 0, len(urls))
+
+	for _, raw := range urls {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			continue
+		}
+
+		if resolve.HostSuffix(parsed.Hostname(), domain) {
+			out = append(out, raw)
+		}
+	}
+
+	return out
 }
 
 // appendTarget adds the explicitly named target unless it is already there.

@@ -15,7 +15,7 @@ func TestScopeTestCommand(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "scope.txt")
-	require.NoError(t, os.WriteFile(path, []byte("example.com\n"), 0o600))
+	require.NoError(t, os.WriteFile(path, []byte("app.test\n"), 0o600))
 
 	tests := []struct {
 		name      string
@@ -23,9 +23,12 @@ func TestScopeTestCommand(t *testing.T) {
 		want      string
 		wantError bool
 	}{
-		{name: "in scope", url: "https://example.com/x", want: "IN-SCOPE"},
+		{name: "in scope", url: "https://app.test/x", want: "IN-SCOPE"},
 		{name: "out of scope", url: "https://evil.com/", want: "OUT-OF-SCOPE", wantError: true},
-		{name: "canary", url: "https://canary.invalid/", want: "CANARY", wantError: true},
+		// Neither destination is ever contacted: the primary one payloads aim
+		// at, nor the second one the input_controlled check uses.
+		{name: "default destination", url: "https://google.com/", want: "CANARY", wantError: true},
+		{name: "second destination", url: "https://example.com/", want: "CANARY", wantError: true},
 	}
 
 	for _, tt := range tests {

@@ -73,7 +73,7 @@ func runDecode(cmd *cobra.Command, source string, matrix bool) error {
 	report := decodeReport{Source: source, Blobs: make([]blobReport, 0, len(blobs))}
 
 	for _, b := range blobs {
-		item, err := describeBlob(cmd.Context(), b, source, cfg.Canary, replayer)
+		item, err := describeBlob(cmd.Context(), b, source, cfg.Destination(), replayer)
 		if err != nil {
 			return err
 		}

@@ -96,7 +96,14 @@ func registerPersistentFlags(root *cobra.Command) {
 	fs.String("config", "", "config file (default $HOME/.detour.yaml)")
 	fs.String("log-level", "info", "log level (debug, info, warn, error)")
 	fs.String("scope-file", "", "bug bounty scope list; hard boundary on every request")
-	fs.String("canary", config.DefaultCanary, "canary host (RFC 6761 .invalid, never contacted)")
+	fs.String("redirect-to", config.DefaultRedirectTo,
+		"destination payloads try to reach; a redirect that arrives here is the finding (never contacted)")
+	fs.String("canary", config.DefaultCanary, "deprecated name for --redirect-to")
+
+	if err := fs.MarkDeprecated("canary", "use --redirect-to"); err != nil {
+		panic(err)
+	}
+
 	fs.StringArray("header", []string{}, "extra request header (repeatable); in-scope hosts only")
 	fs.String("cookie", "", "inline session cookies; in-scope hosts only")
 	fs.String("cookies-file", "", "Netscape cookie jar; in-scope hosts only")

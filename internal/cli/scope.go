@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/nedlir/detour/internal/attack"
 	"github.com/nedlir/detour/internal/config"
 	"github.com/nedlir/detour/internal/scope"
 	"github.com/spf13/cobra"
@@ -57,17 +58,33 @@ func newScopeTestCmd() *cobra.Command {
 	}
 }
 
+// refuseDestinations adds the second probe's host to the set the guard will
+// never contact.
+//
+// The input_controlled check points its second probe at its own host, and that
+// host is no more ours to request than the first. It matters now that the
+// second destination can be a real resolving domain: without this, a crawl or
+// a URL list containing it would be fetched with the operator's credentials
+// attached.
+func refuseDestinations(g *scope.Guard, destination string) *scope.Guard {
+	g.Refuse(attack.AltCanary(destination))
+
+	return g
+}
+
 func guardFromConfig(cfg config.Config) (*scope.Guard, error) {
+	destination := cfg.Destination()
+
 	if cfg.ScopeFile == "" {
-		return scope.New(cfg.Canary), nil
+		return refuseDestinations(scope.New(destination), destination), nil
 	}
 
-	g, err := scope.LoadFile(cfg.ScopeFile, cfg.Canary)
+	g, err := scope.LoadFile(cfg.ScopeFile, destination)
 	if err != nil {
 		return nil, err
 	}
 
-	return g, nil
+	return refuseDestinations(g, destination), nil
 }
 
 func classify(guard *scope.Guard, raw string) (string, error) {

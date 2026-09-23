@@ -44,7 +44,7 @@ func newJSCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&outDir, "out", "", "write findings.jsonl, findings.json, and report.md to this directory")
+	cmd.Flags().StringVar(&outDir, "out", "", "write REPORT.md, a per-finding report, and the machine formats to this directory")
 	cmd.Flags().BoolVar(&dns, "dns", false, "resolve every allowlisted host and flag the ones that do not exist")
 	cmd.Flags().BoolVar(&findOut, "findings", false, "emit findings as JSONL instead of the full analysis")
 	cmd.Flags().BoolVar(&headless, "headless", false, "prove candidates in a headless browser (needs Chrome)")

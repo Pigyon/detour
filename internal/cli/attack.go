@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/nedlir/detour/internal/adapter"
 	"github.com/nedlir/detour/internal/attack"
@@ -18,12 +19,13 @@ import (
 
 func newAttackCmd() *cobra.Command {
 	var (
-		keyword  string
-		filter   string
-		outDir   string
-		resume   string
-		headless bool
-		escalate bool
+		keyword   string
+		filter    string
+		outDir    string
+		resume    string
+		headless  bool
+		escalate  bool
+		useNuclei bool
 	)
 
 	cmd := &cobra.Command{
@@ -32,21 +34,38 @@ func newAttackCmd() *cobra.Command {
 		Long:  "attack reads a URL list, HAR, Burp export, jsonl stream, or stdin (-) and emits capability-scored findings as JSONL.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAttack(cmd, args[0], keyword, filter, outDir, resume, headless, escalate)
+			return runAttack(cmd, args[0], attackOptions{
+				keyword: keyword, filter: filter, outDir: outDir, resume: resume,
+				headless: headless, escalate: escalate, nuclei: useNuclei,
+			})
 		},
 	}
 
 	cmd.Flags().StringVar(&keyword, "keyword", payload.DefaultKeyword, "injection mark replaced by each payload")
-	cmd.Flags().StringVar(&filter, "filter", "", "comma-separated mechanisms to report (header,js,meta,refresh,crlf,blob,query)")
-	cmd.Flags().StringVar(&outDir, "out", "", "write findings.jsonl, findings.json, and report.md to this directory")
+	cmd.Flags().StringVar(&filter, "filter", "", "comma-separated mechanisms to report ("+strings.Join(payload.Mechanisms(), ",")+")")
+	cmd.Flags().StringVar(&outDir, "out", "", "write REPORT.md, a per-finding report, and the machine formats to this directory")
 	cmd.Flags().StringVar(&resume, "resume", "", "append-only checkpoint file; skip completed attempts")
 	cmd.Flags().BoolVar(&headless, "headless", false, "prove candidates in a headless browser (needs Chrome)")
 	cmd.Flags().BoolVar(&escalate, "escalate", false, "attach escalation capabilities; never performs the escalation")
+	cmd.Flags().BoolVar(&useNuclei, "nuclei", false,
+		"also run an installed nuclei binary as a second opinion; absent nuclei is a no-op")
 
 	return cmd
 }
 
-func runAttack(cmd *cobra.Command, source, keyword, filter, outDir, resume string, headless, escalate bool) error {
+// attackOptions are the attack command's own switches, kept together so the
+// function signature does not grow a parameter per flag.
+type attackOptions struct {
+	keyword  string
+	filter   string
+	outDir   string
+	resume   string
+	headless bool
+	escalate bool
+	nuclei   bool
+}
+
+func runAttack(cmd *cobra.Command, source string, opts attackOptions) error {
 	cfg, ok := config.FromContext(cmd.Context())
 	if !ok {
 		return errors.New("config not loaded")
@@ -71,9 +90,14 @@ func runAttack(cmd *cobra.Command, source, keyword, filter, outDir, resume strin
 		return errors.New("no urls in source")
 	}
 
-	eng := attack.New(c, cfg.Canary, keyword, cfg.Concurrency, nil)
+	eng := attack.New(c, cfg.Destination(), opts.keyword, cfg.Concurrency, nil)
 
-	closer, err := attachCheckpoint(eng, resume)
+	// A redirector that only accepts its own host is completed by another
+	// redirector on that host, and selection has already found which
+	// endpoints those are.
+	eng.SetChainTargets(attack.ChainTargetsFrom(urls))
+
+	closer, err := attachCheckpoint(eng, opts.resume)
 	if err != nil {
 		return err
 	}
@@ -85,10 +109,11 @@ func runAttack(cmd *cobra.Command, source, keyword, filter, outDir, resume strin
 		return err
 	}
 
-	findings = maybeConfirm(cmd, cfg, findings, headless, outDir)
-	findings = maybeEscalate(findings, escalate)
+	findings = append(findings, maybeNuclei(cmd, cfg, urls, opts.nuclei)...)
+	findings = maybeConfirm(cmd, cfg, findings, opts.headless, opts.outDir)
+	findings = maybeEscalate(findings, opts.escalate)
 
-	return writeAttackOutput(cmd, findings, filter, outDir)
+	return writeAttackOutput(cmd, findings, opts.filter, opts.outDir)
 }
 
 func attachCheckpoint(eng *attack.Engine, resume string) (func(), error) {

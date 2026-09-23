@@ -14,6 +14,7 @@ import (
 	"github.com/nedlir/detour/internal/dork"
 	"github.com/nedlir/detour/internal/harvest"
 	"github.com/nedlir/detour/internal/hidden"
+	"github.com/nedlir/detour/internal/payload"
 	"github.com/nedlir/detour/internal/scope"
 	"github.com/nedlir/detour/internal/surface"
 	"github.com/spf13/cobra"
@@ -27,20 +28,44 @@ type reconFlags struct {
 	crawl      bool
 	js         bool
 	escalate   bool
+	nuclei     bool
 	depth      int
 	outDir     string
+	// keyword, filter and resume belong to the attack stage. A pipeline run
+	// reaches that stage too, and offering them only on `detour attack` meant
+	// an interrupted full run could not be resumed at all.
+	keyword string
+	filter  string
+	resume  string
 }
 
+// register adds the flags a full pipeline run understands.
 func (r *reconFlags) register(cmd *cobra.Command) {
+	r.registerHarvest(cmd)
+
 	fs := cmd.Flags()
-	fs.BoolVar(&r.passive, "passive", false, "archives and imports only; never touch the target")
 	fs.BoolVar(&r.vendorOnly, "vendor-only", false, "keep only known ESP and martech click wrappers")
 	fs.BoolVar(&r.deep, "deep", false, "brute-force hidden redirect parameters on endpoints with no candidate")
-	fs.BoolVar(&r.crawl, "crawl", true, "crawl the target for URLs (ignored under --passive)")
 	fs.BoolVar(&r.js, "js", true, "read client-side code for navigation sinks (ignored under --passive)")
 	fs.BoolVar(&r.escalate, "escalate", false, "attach escalation capabilities; never performs the escalation")
+	fs.BoolVar(&r.nuclei, "nuclei", false,
+		"also run an installed nuclei binary as a second opinion; absent nuclei is a no-op")
+	fs.StringVar(&r.keyword, "keyword", payload.DefaultKeyword, "injection mark replaced by each payload")
+	fs.StringVar(&r.filter, "filter", "",
+		"comma-separated mechanisms to report ("+strings.Join(payload.Mechanisms(), ",")+")")
+	fs.StringVar(&r.resume, "resume", "", "append-only checkpoint file; skip completed attempts")
+}
+
+// registerHarvest adds only the flags the harvest command actually reads.
+//
+// A flag a command advertises and ignores is worse than one it does not offer:
+// the operator sets it, sees no error, and believes it took effect.
+func (r *reconFlags) registerHarvest(cmd *cobra.Command) {
+	fs := cmd.Flags()
+	fs.BoolVar(&r.passive, "passive", false, "archives and imports only; never touch the target")
+	fs.BoolVar(&r.crawl, "crawl", true, "crawl the target for URLs (ignored under --passive)")
 	fs.IntVar(&r.depth, "depth", 3, "crawl depth")
-	fs.StringVar(&r.outDir, "out", "", "write results to this directory")
+	fs.StringVar(&r.outDir, "out", "", "write harvested.json to this directory")
 }
 
 func newHarvestCmd() *cobra.Command {
@@ -58,7 +83,7 @@ func newHarvestCmd() *cobra.Command {
 		},
 	}
 
-	flags.register(cmd)
+	flags.registerHarvest(cmd)
 
 	return cmd
 }
@@ -75,6 +100,12 @@ func runHarvest(cmd *cobra.Command, target string, flags *reconFlags) error {
 	}
 
 	result := harvestFor(cmd.Context(), cfg, c, target, flags)
+
+	if flags.outDir != "" {
+		if err := writeArtifact(flags.outDir, "harvested.json", result); err != nil {
+			return err
+		}
+	}
 
 	return writeJSON(cmd, result, fmt.Sprintf("%d urls from %d sources", len(result.URLs), len(result.Sources)))
 }
@@ -111,7 +142,7 @@ func harvestFor(
 // nothing else. The target's own scope file governs target traffic; it must
 // not decide whether detour can read Wayback.
 func archiveClient(cfg config.Config) (*client.Client, error) {
-	guard, err := scope.Parse(harvest.ArchiveHosts, cfg.Canary)
+	guard, err := scope.Parse(harvest.ArchiveHosts, cfg.Destination())
 	if err != nil {
 		return nil, err
 	}
@@ -163,6 +194,11 @@ func runSurface(cmd *cobra.Command, domain, outDir string) error {
 }
 
 func newMapper(cfg config.Config) (*surface.Mapper, error) {
+	guard, err := guardFromConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	resolver, err := surface.NewDNSResolver()
 	if err != nil {
 		return nil, err
@@ -178,6 +214,7 @@ func newMapper(cfg config.Config) (*surface.Mapper, error) {
 		Resolver:    resolver,
 		Prober:      prober,
 		Concurrency: cfg.Concurrency,
+		Allow:       guard.Allows,
 	}), nil
 }
 
@@ -200,7 +237,7 @@ func newSelectCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&vendorOnly, "vendor-only", false, "keep only known ESP and martech click wrappers")
-	cmd.Flags().StringVar(&outDir, "out", "", "write selected.jsonl to this directory")
+	cmd.Flags().StringVar(&outDir, "out", "", "write selected.json to this directory")
 
 	return cmd
 }
