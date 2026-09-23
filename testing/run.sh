@@ -660,6 +660,8 @@ rs = sar["runs"][0]["results"]
 rules = {x["id"] for x in sar["runs"][0]["tool"]["driver"]["rules"]}
 j = json.load(open(d + "/findings.json"))
 body = rep + one + open(d + "/findings.json").read()
+reports = [open(x + "/REPORT.md").read() for x in glob.glob(d + "/findings/*")]
+envelopes = [r for r in reports if "encoded envelope" in r]
 for name, good in [
   ("run report groups by endpoint", rep.count("\n## ") > 0),
   ("a report per finding", len(fd) > 0),
@@ -670,10 +672,10 @@ for name, good in [
   ("json carries root cause and fingerprint", all("root_cause" in x and "fingerprint" in x for x in j)),
   ("no scoring anywhere", not re.search(r"cvss|severity|score", body, re.I)),
   ("no internal marker leaks", "detour-redirector" not in body),
-  ("a blob report explains its envelope", all(
-      "## Inside the envelope" in open(x + "/REPORT.md").read()
-      and "detour decode" in open(x + "/REPORT.md").read()
-      for x in glob.glob(d + "/findings/OR-B*"))),
+  # Selected by the report's own mechanism line, not by technique id: OR-B04
+  # and OR-B05 are in the OR-B family and carry no envelope at all.
+  ("every envelope report explains its envelope", envelopes and all(
+      "## Inside the envelope" in r and "detour decode" in r for r in envelopes)),
 ]:
     print(("PASS " if good else "FAIL ") + name)
 EOF
