@@ -25,6 +25,7 @@ func Render(f model.Finding) string {
 	fmt.Fprintf(&b, "**Delivered via:** %s\n\n", mechanismLine(f.Mechanism))
 
 	writeProof(&b, f)
+	writeEnvelope(&b, f)
 	writeExplanation(&b, f)
 	writeArtifactList(&b, f)
 
@@ -76,6 +77,63 @@ func writeExplanation(b *strings.Builder, f model.Finding) {
 	}
 
 	fmt.Fprintf(b, "## Why it works\n\n%s\n\n", sentence(rationale))
+}
+
+// writeEnvelope explains a destination that is not visible in the URL.
+//
+// Without it a blob finding is two opaque base64 strings and an assurance
+// that the second is the first with the destination swapped, which is not
+// something a triager can check. Naming the chain and the field makes the
+// proof reproducible by hand.
+func writeEnvelope(b *strings.Builder, f model.Finding) {
+	chain := decoderChain(f)
+	field := evidenceValue(f, "blob_field=")
+
+	if chain == "" && field == "" {
+		return
+	}
+
+	b.WriteString("## Inside the envelope\n\n")
+	b.WriteString("The destination is not in the URL. It is carried inside an encoded envelope:\n\n")
+
+	if chain != "" {
+		fmt.Fprintf(b, "- Decoded by: %s\n", chain)
+	}
+
+	if field != "" {
+		fmt.Fprintf(b, "- Destination field: `%s`\n", field)
+	}
+
+	if evidenceValue(f, "blob_strategy=") == "preserved-envelope" {
+		b.WriteString("- Every other field the envelope carries is left as it was, " +
+			"so the only change is the destination\n")
+	}
+
+	fmt.Fprintf(b, "\nRun `detour decode '%s'` to read the envelope and check the field.\n\n",
+		f.Candidate.SourceURL)
+}
+
+// decoderChain names the transforms in the order they are applied.
+func decoderChain(f model.Finding) string {
+	kinds := make([]string, 0, len(f.Candidate.DecoderChain))
+	for _, d := range f.Candidate.DecoderChain {
+		if d.Kind != "" {
+			kinds = append(kinds, "`"+d.Kind+"`")
+		}
+	}
+
+	return strings.Join(kinds, " then ")
+}
+
+// evidenceValue reads one "name=value" entry out of the evidence list.
+func evidenceValue(f model.Finding, prefix string) string {
+	for _, e := range f.Evidence {
+		if after, found := strings.CutPrefix(e, prefix); found {
+			return after
+		}
+	}
+
+	return ""
 }
 
 func writeArtifactList(b *strings.Builder, f model.Finding) {

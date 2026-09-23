@@ -670,6 +670,10 @@ for name, good in [
   ("json carries root cause and fingerprint", all("root_cause" in x and "fingerprint" in x for x in j)),
   ("no scoring anywhere", not re.search(r"cvss|severity|score", body, re.I)),
   ("no internal marker leaks", "detour-redirector" not in body),
+  ("a blob report explains its envelope", all(
+      "## Inside the envelope" in open(x + "/REPORT.md").read()
+      and "detour decode" in open(x + "/REPORT.md").read()
+      for x in glob.glob(d + "/findings/OR-B*"))),
 ]:
     print(("PASS " if good else "FAIL ") + name)
 EOF
