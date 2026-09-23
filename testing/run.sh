@@ -233,6 +233,19 @@ if "$D" js "$LAB/c02" --scope-file "$OUT/lab.scope" --findings 2>/dev/null > "$O
    && [ -s "$OUT/c02.jsonl" ] \
    && "$D" confirm -l "$OUT/c02.jsonl" --scope-file "$OUT/lab.scope" --out "$OUT/c02conf" 2>&1 | grep -q "confirmed"; then
   ok "L7 browser promotes a client-side finding"
+
+  # F8: a promotion the reviewer cannot look at is not much of a promotion.
+  atleast "F8 the browser writes artifacts" 1 \
+    "$(find "$OUT/c02conf" -name '*.har' -o -name '*.png' 2>/dev/null | wc -l)"
+  [ -n "$(ls -A "$OUT/c02conf" 2>/dev/null)" ] && ok "F15 confirm --out writes files" || bad "F15 confirm --out"
+
+  # An artifact nothing points at is an orphan. The report has to name it.
+  if find "$OUT/c02conf" \( -name '*.har' -o -name '*.png' \) -printf '%f\n' 2>/dev/null \
+     | while read -r a; do grep -qrF -- "$a" "$OUT/c02conf" --include='*.md' --include='*.json' || exit 1; done; then
+    ok "F8 every artifact is named in the output"
+  else
+    bad "F8 an artifact is written but never referenced"
+  fi
 else
   note "L7 browser (needs Chrome)"
 fi
@@ -656,17 +669,39 @@ print(sum(1 for l in open(p) if json.loads(l)['mechanism'] == 'meta') if os.path
     "$(findings "$D" attack <(echo 'https://out.reddit.com/?url=https://example.com') \
         --scope-file "$OUT/r6.scope" --rate 3 --timeout 8s)"
 
-  # T3 needs a real archived envelope; a synthetic one is rejected. Fetched at
-  # run time rather than pinned, so no third party's data is stored here.
-  ENV_URL=$(curl -s --max-time 45 \
-    "http://web.archive.org/cdx/search/cdx?url=trace.kucoin.com*&output=text&fl=original&collapse=urlkey&limit=40" 2>/dev/null \
-    | grep -m1 'track/click2')
-  if [ -n "$ENV_URL" ]; then
-    "$D" attack <(echo "$ENV_URL") --scope-file "$OUT/t3.scope" --out "$OUT/t3" --rate 3 --timeout 8s >/dev/null 2>&1
+  # T3 needs a real archived envelope; a synthetic one returns 400 and proves
+  # nothing. It is fetched rather than pinned so no third party's data is
+  # stored in this repo, and cached under OUT so a re-run in the same session
+  # does not depend on the archive twice. The archive answered on one run and
+  # not the next, which is a flaky check, not a flaky tool.
+  # Cached outside OUT, which is wiped at the start of every run, so the
+  # archive is asked once rather than once per run.
+  ENV_CACHE="${TMPDIR:-/tmp}/detour-t3-envelope"
+  CDX="http://web.archive.org/cdx/search/cdx?url=trace.kucoin.com*&output=text&fl=original&collapse=urlkey&limit=400"
+  if [ ! -s "$ENV_CACHE" ]; then
+    for attempt in 1 2 3; do
+      raw=$(curl -s --max-time 60 "$CDX" 2>/dev/null)
+      printf '%s' "$raw" | grep -m1 -E 'track/click[0-9]*/[A-Za-z0-9_-]{40,}' > "$ENV_CACHE"
+      [ -s "$ENV_CACHE" ] && break
+
+      # The archive answers with an HTML outage page rather than an error,
+      # which is worth saying out loud: it is not the same as having no
+      # envelope to find.
+      case "$raw" in
+        *"Temporarily Offline"*|*"<html"*) ENV_WHY="the archive is offline" ;;
+        *)                                 ENV_WHY="the archive had no envelope" ;;
+      esac
+
+      sleep 5
+    done
+  fi
+
+  if [ -s "$ENV_CACHE" ]; then
+    "$D" attack "$ENV_CACHE" --scope-file "$OUT/t3.scope" --out "$OUT/t3" --rate 3 --timeout 8s >/dev/null 2>&1
     grep -q '"mechanism":"blob"' "$OUT/t3/findings.jsonl" 2>/dev/null \
       && ok "T3 opaque envelope decoded and attacked" || bad "T3 opaque envelope"
   else
-    note "T3 (no archived envelope available)"
+    note "T3 (${ENV_WHY:-no envelope} after three tries)"
   fi
 fi
 
