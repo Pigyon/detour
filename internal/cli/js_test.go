@@ -123,7 +123,7 @@ func TestJSCommandWritesReport(t *testing.T) {
 	outDir := filepath.Join(dir, "run")
 	runJSCmd(t, jsArgs(path, "--out", outDir))
 
-	for _, name := range []string{"findings.jsonl", "findings.json", "report.md"} {
+	for _, name := range []string{"findings.jsonl", "findings.json", "REPORT.md"} {
 		_, err := os.Stat(filepath.Join(outDir, name))
 		assert.NoError(t, err, "%s written", name)
 	}

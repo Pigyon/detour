@@ -13,10 +13,14 @@ import (
 	"github.com/nedlir/detour/internal/config"
 	"github.com/nedlir/detour/internal/lab"
 	"github.com/nedlir/detour/internal/model"
+	"github.com/nedlir/detour/internal/resolve"
 	"github.com/nedlir/detour/internal/scope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// testCanary is the destination the attack tests prove findings against.
+const testCanary = "canary.invalid"
 
 func newEngine(t *testing.T) (*attack.Engine, *httptest.Server) {
 	t.Helper()
@@ -25,7 +29,7 @@ func newEngine(t *testing.T) (*attack.Engine, *httptest.Server) {
 	t.Cleanup(srv.Close)
 
 	cfg := config.Config{
-		Canary:      "canary.invalid",
+		Canary:      testCanary,
 		Rate:        100,
 		Concurrency: 4,
 		Timeout:     3 * time.Second,
@@ -155,7 +159,13 @@ func TestAttackDecoyAllowlistZeroFP(t *testing.T) {
 	assert.Empty(t, findings)
 }
 
-func TestAttackResumeSkipsCompleted(t *testing.T) {
+// TestAttackResumeReturnsCompletedFindings is what --resume exists for.
+//
+// The checkpoint records the attempts already made so they are not repeated,
+// and the findings they produced so they are not lost. Skipping the work and
+// the result both is how an interrupted scan came back reporting zero and
+// overwrote the report that had the answers.
+func TestAttackResumeReturnsCompletedFindings(t *testing.T) {
 	t.Parallel()
 
 	eng, srv := newEngine(t)
@@ -171,6 +181,10 @@ func TestAttackResumeSkipsCompleted(t *testing.T) {
 	require.NotEmpty(t, first)
 	require.NoError(t, store.Close())
 
+	// A second run against the same checkpoint sends nothing and still
+	// reports everything the first run proved.
+	srv.Close()
+
 	again, err := checkpoint.Open(path)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = again.Close() })
@@ -178,12 +192,40 @@ func TestAttackResumeSkipsCompleted(t *testing.T) {
 
 	second, err := eng.Run(context.Background(), urls)
 	require.NoError(t, err)
-	assert.Empty(t, second)
+
+	assert.Len(t, second, len(first), "a resumed run must not lose findings")
+	assert.Equal(t, techniqueSet(first), techniqueSet(second))
+}
+
+func techniqueSet(findings []model.Finding) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, f := range findings {
+		out[f.TechniqueID] = struct{}{}
+	}
+
+	return out
 }
 
 func TestAltCanary(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "canary2.invalid", attack.AltCanary("canary.invalid"))
-	assert.Equal(t, "x2", attack.AltCanary("x"))
+	// The second destination must never be a suffix match of the first, or the
+	// input_controlled check agrees with itself for free.
+	for _, primary := range []string{"canary.invalid", "google.com", "example.com", "sub.example.net"} {
+		alt := attack.AltCanary(primary)
+		assert.NotEqual(t, primary, alt)
+		assert.False(t, resolve.HostSuffix(alt, primary), "%s must not sit under %s", alt, primary)
+		assert.False(t, resolve.HostSuffix(primary, alt), "%s must not sit under %s", primary, alt)
+	}
+
+	// A target that checks its destination takes a real domain and refuses a
+	// reserved one, so an alt pinned to .invalid silently suppresses findings
+	// on exactly the targets that bother to validate.
+	assert.Equal(t, "example.com", attack.AltCanary("google.com"))
+	assert.Equal(t, "example.net", attack.AltCanary("example.com"))
+
+	// A non-resolving primary keeps a non-resolving alt, so a run can stay
+	// clear of real names entirely.
+	assert.Equal(t, "detour-alt.invalid", attack.AltCanary("canary.invalid"))
+	assert.Equal(t, "detour-alt2.invalid", attack.AltCanary("detour-alt.invalid"))
 }

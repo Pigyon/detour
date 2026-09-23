@@ -10,6 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// paramURL is the destination parameter these fixtures use.
+const paramURL = "url"
+
 // mechQuery is the mechanism most report fixtures use.
 const mechQuery = "query"
 
@@ -52,11 +55,11 @@ func TestFingerprintIsStable(t *testing.T) {
 	f := model.NewFinding()
 	f.TechniqueID = "OR-A07"
 	f.Candidate = model.NewNavigationCandidate("https://a.lab/article/7?url=x", model.RepresentationQueryParameter)
-	f.Candidate.ParamName = "url"
+	f.Candidate.ParamName = paramURL
 
 	g := f
 	g.Candidate = model.NewNavigationCandidate("https://a.lab/article/99?url=y", model.RepresentationQueryParameter)
-	g.Candidate.ParamName = "url"
+	g.Candidate.ParamName = paramURL
 
 	assert.Equal(t, report.Fingerprint(f), report.Fingerprint(g), "ids do not change the defect")
 	assert.Len(t, report.Fingerprint(f), 32)

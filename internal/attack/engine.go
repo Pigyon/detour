@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 
@@ -22,16 +22,29 @@ import (
 )
 
 const (
-	mechHeader  = "header"
-	mechCRLF    = "crlf"
-	mechBlob    = "blob"
-	mechQuery   = "query"
-	mechMeta    = "meta"
-	mechRefresh = "refresh"
+	mechHeader  = payload.MechHeader
+	mechCRLF    = payload.MechCRLF
+	mechBlob    = payload.MechBlob
+	mechQuery   = payload.MechQuery
+	mechMeta    = payload.MechMeta
+	mechRefresh = payload.MechRefresh
+	mechPath    = payload.MechPath
+	mechHost    = payload.MechHost
+
+	// techniqueChained is the canary reached only past the first hop.
+	techniqueChained = "OR-B05"
 
 	// maxBodyScan is how much of a response body is read looking for a meta
 	// refresh. The tag lives in the head, so this is generous.
 	maxBodyScan = 1 << 20
+
+	// maxParamValue bounds what is examined when deciding whether a parameter
+	// value is a destination.
+	maxParamValue = 2048
+
+	// maxDerivedParams caps the parameters attacked purely because their value
+	// looks like a destination, so one crowded URL cannot consume a run.
+	maxDerivedParams = 8
 )
 
 // dest is one candidate destination and how the response conveyed it.
@@ -44,11 +57,137 @@ type dest struct {
 	url       string
 	mechanism string
 	technique string
+	// quirk marks a destination only a lenient parser reads as the canary,
+	// because net/url refuses the string. Such a hit is candidate tier: a
+	// same-origin check cannot settle which host a browser picks.
+	quirk bool
+	// scheme marks a script-bearing scheme that reached the sink. There is no
+	// host to compare, so the arrival of the scheme is the finding.
+	scheme bool
 }
 
 // redirectParams is the canonical list, shared with the classifier so the
 // engine never skips a parameter selection just flagged as interesting.
 var redirectParams = corpus.RedirectParams()
+
+// hostParams carry a bare hostname that a framework interpolates into the
+// destination's authority, rather than a whole URL. A payload wearing a scheme
+// is wasted on them, and the bare-host payload is wasted everywhere else.
+var hostParams = map[string]struct{}{
+	"desthost": {}, "dest_host": {}, "host": {}, "hostname": {}, "domain": {},
+}
+
+// paramTechniques name the techniques defined by where the destination sits
+// rather than by the payload that got through.
+//
+// A SAML RelayState that redirects is OR-D04 whichever string beat the
+// validator, because the technique is the parameter's role in the protocol.
+// Labelling it after the payload loses the only detail a triager needs.
+var paramTechniques = map[string]string{
+	"relaystate": "OR-D04",
+}
+
+// techniqueForParam returns the id a parameter's role implies, if any.
+func techniqueForParam(name string) (string, bool) {
+	id, ok := paramTechniques[strings.ToLower(name)]
+
+	return id, ok
+}
+
+// targetParams names the parameters on one URL worth attacking: the ones whose
+// name is redirect shaped, plus the ones whose current value is already a URL.
+//
+// The second half is the stronger signal of the two. A parameter called "q" or
+// "u2" that today holds "https://target.example/account" is a destination the
+// application itself put there, whatever it is named, and a list of known
+// names can never cover it. The classifier scores this already; deriving it
+// here as well means it also applies to a bare URL list, and means the two
+// stages cannot disagree about which parameters matter.
+func targetParams(query url.Values) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+
+	for _, name := range redirectParams {
+		if actual, ok := lookupQuery(query, name); ok {
+			if _, dup := seen[actual]; !dup {
+				seen[actual] = struct{}{}
+
+				out = append(out, actual)
+			}
+		}
+	}
+
+	// Derived parameters are capped. Each one costs roughly thirty requests,
+	// and a URL carrying fifty of them would spend a whole scan's budget on
+	// one endpoint. The name list above is the reliable signal; this is the
+	// supplement.
+	derived := 0
+
+	for _, name := range sortedKeys(query) {
+		if derived >= maxDerivedParams {
+			break
+		}
+
+		if _, dup := seen[name]; dup {
+			continue
+		}
+
+		if !looksLikeURL(query.Get(name)) {
+			continue
+		}
+
+		seen[name] = struct{}{}
+		derived++
+
+		out = append(out, name)
+	}
+
+	// Stable order, so two runs of the same scan report the same thing.
+	sort.Strings(out)
+
+	return out
+}
+
+// sortedKeys returns a query's parameter names in a stable order.
+func sortedKeys(query url.Values) []string {
+	out := make([]string, 0, len(query))
+	for name := range query {
+		out = append(out, name)
+	}
+
+	sort.Strings(out)
+
+	return out
+}
+
+// looksLikeURL reports whether a parameter value is already a destination.
+//
+// A protocol-relative value counts only when it names a host. Accepting a bare
+// "//" made any parameter holding two slashes look like a destination, which
+// is the cheapest possible way to inflate a scan.
+func looksLikeURL(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > maxParamValue {
+		return false
+	}
+
+	if rest, ok := strings.CutPrefix(value, "//"); ok {
+		host, _, _ := strings.Cut(strings.TrimLeft(rest, "/"), "/")
+
+		return strings.Contains(host, ".")
+	}
+
+	parsed, err := url.Parse(value)
+
+	return err == nil && parsed.Hostname() != "" &&
+		(parsed.Scheme == "http" || parsed.Scheme == "https")
+}
+
+func isHostParam(name string) bool {
+	_, ok := hostParams[strings.ToLower(name)]
+
+	return ok
+}
 
 // probe is one attack attempt: the request to send, the independent
 // second-canary request that proves input control, and where it came from.
@@ -77,12 +216,21 @@ type blobContext struct {
 
 // Engine probes candidates with the built-in payload set.
 type Engine struct {
-	client      *client.Client
-	canary      string
-	keyword     string
-	payloads    []payload.Payload
-	concurrency int
-	checkpoint  *checkpoint.Store
+	client       *client.Client
+	canary       string
+	keyword      string
+	payloads     []payload.Payload
+	concurrency  int
+	checkpoint   *checkpoint.Store
+	chainTargets []ChainTarget
+	trustedHosts []string
+}
+
+// SetTrustedHosts supplies hosts a validator is known to allow, as read out of
+// client-side guards by the js stage. Payloads that have to wear a trusted
+// name are tried against each one.
+func (e *Engine) SetTrustedHosts(hosts []string) {
+	e.trustedHosts = append([]string(nil), hosts...)
 }
 
 // New builds an engine. payloads may be nil to use payload.BuiltIn.
@@ -113,14 +261,62 @@ func (e *Engine) SetCheckpoint(store *checkpoint.Store) {
 	e.checkpoint = store
 }
 
-// AltCanary is the independent second host used for the input_controlled check.
-func AltCanary(canary string) string {
-	host, rest, ok := strings.Cut(canary, ".")
-	if ok {
-		return host + "2." + rest
+// The input_controlled check needs a second, independent destination: if only
+// one is ever reflected, the endpoint may simply redirect there always.
+//
+// The second destination has to be as acceptable to the target as the first.
+// A target that checks its destination at all (rejects reserved TLDs, or
+// requires a host that resolves, which is what a link shortener does) will
+// take a real domain and refuse a .invalid one, and then a fully vulnerable
+// endpoint reports nothing at all. So the alt mirrors the primary's nature
+// rather than being pinned to one name.
+var (
+	// reservedTLDs never resolve, by RFC 2606 and RFC 6761.
+	reservedTLDs = []string{".invalid", ".test", ".example", ".localhost"}
+
+	// altResolving are IANA-reserved documentation domains. They resolve, so
+	// they satisfy a target that checks, and they belong to nobody, so
+	// pointing a payload at one implicates no third party.
+	altResolving = []string{"example.com", "example.net"}
+
+	// altReserved are used when the primary destination does not resolve
+	// either, keeping a run entirely free of real names.
+	altReserved = []string{"detour-alt.invalid", "detour-alt2.invalid"}
+)
+
+// AltCanary returns a destination distinct from primary under the same
+// suffix-aware comparison a finding is judged by.
+func AltCanary(primary string) string {
+	candidates := altResolving
+	if isReservedName(primary) {
+		candidates = altReserved
 	}
 
-	return canary + "2"
+	for _, candidate := range candidates {
+		if !related(candidate, primary) {
+			return candidate
+		}
+	}
+
+	return altReserved[0]
+}
+
+// isReservedName reports whether a host is one that cannot resolve.
+func isReservedName(host string) bool {
+	lower := strings.ToLower(host)
+	for _, tld := range reservedTLDs {
+		if strings.HasSuffix(lower, tld) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// related reports whether two destinations would match each other under the
+// canary check, which would let the second probe agree with the first for free.
+func related(a, b string) bool {
+	return resolve.HostSuffix(a, b) || resolve.HostSuffix(b, a)
 }
 
 // Run attacks every source URL and returns capability-scored findings.
@@ -169,6 +365,10 @@ func (e *Engine) attackOne(ctx context.Context, raw string) ([]model.Finding, er
 		return nil, err
 	}
 
+	hits = append(hits, e.attackPollution(ctx, parsed)...)
+	hits = append(hits, e.attackNestedRedirectURI(ctx, parsed)...)
+	hits = append(hits, e.attackFetcherChain(ctx, parsed)...)
+
 	seen := map[string]struct{}{}
 
 	for _, p := range e.payloads {
@@ -182,7 +382,7 @@ func (e *Engine) attackOne(ctx context.Context, raw string) ([]model.Finding, er
 			if ok {
 				hits = append(hits, f)
 			}
-		case mechCRLF:
+		case mechCRLF, mechPath:
 			f, ok, err := e.probeCRLF(ctx, raw, p)
 			if err != nil {
 				return nil, err
@@ -196,7 +396,24 @@ func (e *Engine) attackOne(ctx context.Context, raw string) ([]model.Finding, er
 		}
 	}
 
+	// The chained class is what is left when the direct route is refused, so
+	// it runs last and only where nothing else got through.
+	hits = append(hits, e.attackChain(ctx, parsed, crackedParams(hits))...)
+
 	return hits, nil
+}
+
+// crackedParams names the parameters a direct payload already walked through.
+func crackedParams(hits []model.Finding) map[string]struct{} {
+	out := map[string]struct{}{}
+
+	for _, f := range hits {
+		if f.Candidate.ParamName != "" {
+			out[f.Candidate.ParamName] = struct{}{}
+		}
+	}
+
+	return out
 }
 
 func (e *Engine) attackKeyword(ctx context.Context, raw string) ([]model.Finding, error) {
@@ -235,50 +452,52 @@ func (e *Engine) attackParams(ctx context.Context, parsed *url.URL, p payload.Pa
 	hits := []model.Finding{}
 	query := parsed.Query()
 
-	for _, name := range redirectParams {
-		actual, ok := lookupQuery(query, name)
-		if !ok {
+	for _, actual := range targetParams(query) {
+		// A bare-host payload belongs only on a host-shaped parameter, and a
+		// full-URL payload only on the others.
+		if isHostParam(actual) != (p.Mechanism == mechHost) {
 			continue
 		}
 
 		current := query.Get(actual)
-		if payload.NeedsValue(p) && current == "" {
+
+		// A value payload carries the parameter's current value verbatim, so
+		// a value whose authority is internal would have detour ask the target
+		// to reach it. There is nothing to carry.
+		if payload.NeedsValue(p) && (current == "" || !safeValue(current, parsed.Hostname())) {
 			continue
 		}
 
-		trusted := trustedHost(parsed, current)
-		expanded := payload.Expand(p, e.canary, trusted, current)
+		for _, trusted := range trustedHosts(parsed, current, e.trustedHosts) {
+			expanded := payload.Expand(p, e.canary, trusted, current)
 
-		key := actual + "\x00" + expanded
-		if _, dup := seen[key]; dup {
-			continue
+			key := actual + "\x00" + expanded
+			if _, dup := seen[key]; dup {
+				continue
+			}
+
+			seen[key] = struct{}{}
+
+			altExpanded := payload.Expand(p, AltCanary(e.canary), trusted, current)
+
+			f, ok, err := e.confirm(ctx, probe{
+				source:    parsed.String(),
+				probed:    withParam(parsed, actual, expanded),
+				altProbed: withParam(parsed, actual, altExpanded),
+				expanded:  expanded,
+				payload:   p,
+				param:     actual,
+			})
+			if err != nil || !ok {
+				continue
+			}
+
+			hits = append(hits, f)
+
+			// One trusted name getting through is the finding; the others
+			// would only restate it.
+			break
 		}
-
-		seen[key] = struct{}{}
-		next := cloneURL(parsed)
-		q := next.Query()
-		q.Set(actual, expanded)
-		next.RawQuery = q.Encode()
-
-		altExpanded := payload.Expand(p, AltCanary(e.canary), trusted, current)
-		altNext := cloneURL(parsed)
-		altQ := altNext.Query()
-		altQ.Set(actual, altExpanded)
-		altNext.RawQuery = altQ.Encode()
-
-		f, ok, err := e.confirm(ctx, probe{
-			source:    parsed.String(),
-			probed:    next.String(),
-			altProbed: altNext.String(),
-			expanded:  expanded,
-			payload:   p,
-			param:     actual,
-		})
-		if err != nil || !ok {
-			continue
-		}
-
-		hits = append(hits, f)
 	}
 
 	return hits
@@ -287,13 +506,9 @@ func (e *Engine) attackParams(ctx context.Context, parsed *url.URL, p payload.Pa
 func (e *Engine) probeHeader(ctx context.Context, raw string, p payload.Payload) (model.Finding, bool, error) {
 	expanded := payload.Expand(p, e.canary, hostOf(raw), "")
 	altExpanded := payload.Expand(p, AltCanary(e.canary), hostOf(raw), "")
-	headers := http.Header{}
-	headers.Set("X-Forwarded-Host", expanded)
-	headers.Set("X-Host", expanded)
 
-	altHeaders := http.Header{}
-	altHeaders.Set("X-Forwarded-Host", altExpanded)
-	altHeaders.Set("X-Host", altExpanded)
+	headers := forwardedHeaders(expanded)
+	altHeaders := forwardedHeaders(altExpanded)
 
 	return e.confirm(ctx, probe{
 		source:    raw,
@@ -304,6 +519,33 @@ func (e *Engine) probeHeader(ctx context.Context, raw string, p payload.Payload)
 		extra:     headers,
 		altExtra:  altHeaders,
 	})
+}
+
+// forwardedHosts are the headers a reverse proxy or a framework will believe
+// when it builds an absolute URL for a redirect. They are sent together
+// because an application reads whichever one its stack happens to expose, and
+// a probe that sends one at a time costs a request per header for no gain.
+var forwardedHosts = []string{
+	"X-Forwarded-Host",
+	"X-Host",
+	"X-Forwarded-Server",
+	"X-HTTP-Host-Override",
+	"X-Original-Host",
+	"X-Original-URL",
+	"X-Rewrite-URL",
+	"Forwarded",
+}
+
+func forwardedHeaders(value string) http.Header {
+	out := http.Header{}
+	for _, name := range forwardedHosts {
+		out.Set(name, value)
+	}
+
+	// Forwarded is the standardized one and takes a different shape.
+	out.Set("Forwarded", "host="+value)
+
+	return out
 }
 
 func (e *Engine) probeCRLF(ctx context.Context, raw string, p payload.Payload) (model.Finding, bool, error) {
@@ -324,8 +566,13 @@ func (e *Engine) probeCRLF(ctx context.Context, raw string, p payload.Payload) (
 func (e *Engine) confirm(ctx context.Context, pr probe) (model.Finding, bool, error) {
 	technique := pr.techniqueID()
 
+	// A completed attempt is not repeated, and a completed attempt that found
+	// something hands the finding straight back. Skipping the work and the
+	// result both is how a resumed run reported nothing at all.
 	if e.checkpoint != nil && e.checkpoint.Seen(pr.source, pr.expanded, technique) {
-		return model.Finding{}, false, nil
+		recovered, ok := e.checkpoint.Recover(pr.source, pr.expanded, technique)
+
+		return recovered, ok, nil
 	}
 
 	pair, found, status, err := e.readDest(ctx, pr.probed, pr.extra, e.canary)
@@ -333,25 +580,31 @@ func (e *Engine) confirm(ctx context.Context, pr probe) (model.Finding, bool, er
 		return model.Finding{}, false, err
 	}
 
-	hit := found.url != "" && resolve.HitsCanary(pair, e.canary)
+	hit := found.reached(pair, e.canary)
 	if hit {
-		altPair, _, _, err := e.readDest(ctx, pr.altProbed, pr.altExtra, AltCanary(e.canary))
+		altPair, altFound, _, err := e.readDest(ctx, pr.altProbed, pr.altExtra, AltCanary(e.canary))
 		if err != nil {
 			return model.Finding{}, false, err
 		}
 
-		hit = resolve.HitsCanary(altPair, AltCanary(e.canary))
-	}
-
-	if err := e.checkpoint.RecordAttempt(pr.source, pr.expanded, technique, hit); err != nil {
-		return model.Finding{}, false, err
+		hit = altFound.reached(altPair, AltCanary(e.canary))
 	}
 
 	if !hit {
+		if err := e.checkpoint.RecordAttempt(pr.source, pr.expanded, technique, false); err != nil {
+			return model.Finding{}, false, err
+		}
+
 		return model.Finding{}, false, nil
 	}
 
-	return e.finding(pr, pair, found, status), true, nil
+	f := e.finding(pr, pair, found, status)
+
+	if err := e.checkpoint.RecordHit(pr.source, pr.expanded, technique, f); err != nil {
+		return model.Finding{}, false, err
+	}
+
+	return f, true, nil
 }
 
 // techniqueID prefers the envelope class the decoder identified over the
@@ -362,6 +615,13 @@ func (pr probe) techniqueID() string {
 	}
 
 	return pr.payload.Technique
+}
+
+// reached reports whether this destination is the canary under any of the
+// three readings: a parsed host, a host only a lenient parser sees, or a
+// script-bearing scheme that has no host at all.
+func (d dest) reached(pair resolve.Pair, canary string) bool {
+	return d.url != "" && (d.quirk || d.scheme || resolve.HitsCanary(pair, canary))
 }
 
 // mechanism reports how the destination was carried.
@@ -409,20 +669,16 @@ func destValues(resp *http.Response, body []byte) []dest {
 		out = append(out, dest{url: loc})
 	}
 
-	// Raw bytes catch a second Location smuggled in by CRLF injection, which
-	// net/http folds away.
-	if raw, err := httputil.DumpResponse(resp, false); err == nil {
-		for _, loc := range resolve.LocationsFromRaw(raw) {
-			out = append(out, dest{url: loc})
-		}
-	}
-
 	if u, ok := resolve.ParseRefresh(resp.Header.Get("Refresh")); ok {
 		out = append(out, dest{url: u, mechanism: mechRefresh, technique: "OR-D06"})
 	}
 
-	if u, ok := resolve.MetaRefresh(body); ok {
-		out = append(out, dest{url: u, mechanism: mechMeta, technique: "OR-C04"})
+	// Every meta refresh, not just the first: a benign one may sit ahead of
+	// the attacker-controlled one.
+	if refreshed, ok := resolve.MetaRefresh(body); ok {
+		for _, u := range refreshed {
+			out = append(out, dest{url: u, mechanism: mechMeta, technique: "OR-C04"})
+		}
 	}
 
 	return out
@@ -444,7 +700,61 @@ func pickCanaryDest(base string, dests []dest, canary string) (resolve.Pair, des
 		}
 	}
 
+	// A scheme other than http(s) has no host to match, and matching hosts is
+	// all the resolver does. What proves these is that the scheme survived the
+	// validator at all, with the canary still inside it.
+	for _, candidate := range dests {
+		if id, ok := schemeTechnique(candidate.url, canary); ok {
+			candidate.technique = id
+			candidate.mechanism = mechQuery
+			candidate.scheme = true
+
+			return resolve.Pair{}, candidate, true
+		}
+	}
+
+	// Nothing parsed to the canary. A string net/url refuses can still carry
+	// it, which is the whole Spring and delimiter-stuffing class.
+	for _, candidate := range dests {
+		if candidate.url == "" || !resolve.HitsCanaryQuirk(candidate.url, canary) {
+			continue
+		}
+
+		candidate.quirk = true
+
+		return resolve.Pair{}, candidate, true
+	}
+
 	return resolve.Pair{}, dest{}, false
+}
+
+// schemeTechniques name the schemes whose arrival at a sink is the finding.
+// Ordered, not a map: a destination can match only one prefix, and a map would
+// pick it at random between runs.
+var schemeTechniques = []struct {
+	prefix    string
+	technique string
+}{
+	{"javascript:", "OR-E01"},
+	{"vbscript:", "OR-E01"},
+	{"data:", "OR-E02"},
+}
+
+// schemeTechnique reports whether a destination is a script-bearing scheme
+// still carrying the canary.
+func schemeTechnique(loc, canary string) (string, bool) {
+	trimmed := strings.ToLower(strings.TrimSpace(loc))
+	if canary == "" || !strings.Contains(trimmed, strings.ToLower(canary)) {
+		return "", false
+	}
+
+	for _, entry := range schemeTechniques {
+		if strings.HasPrefix(trimmed, entry.prefix) {
+			return entry.technique, true
+		}
+	}
+
+	return "", false
 }
 
 func (e *Engine) finding(pr probe, pair resolve.Pair, found dest, status int) model.Finding {
@@ -468,13 +778,30 @@ func (e *Engine) finding(pr probe, pair resolve.Pair, found dest, status int) mo
 		f.Mechanism = found.mechanism
 	}
 
+	// The parameter's role outranks both, where it defines one.
+	if id, ok := techniqueForParam(pr.param); ok {
+		f.TechniqueID = id
+	}
+
 	f.Candidate = cand
-	f.Capabilities.RedirectExternal = true
+
+	f.Capabilities.RedirectExternal = !found.scheme
 	f.Capabilities.InputControlled = true
+
+	// A script-bearing scheme reaching the sink is script execution, not
+	// navigation, so it earns its own capability and not the external-redirect
+	// one.
+	switch found.technique {
+	case "OR-E01":
+		f.Capabilities.JavaScriptScheme = true
+	case "OR-E02":
+		f.Capabilities.DataScheme = true
+	}
+
 	f.Capabilities.HopCount = 0
 	f.Verdict = model.VerdictConfirmed
 
-	if resolve.NeedsBrowserConfirm(pr.source, e.canary, pair) {
+	if found.quirk || resolve.NeedsBrowserConfirm(pr.source, e.canary, pair) {
 		f.Verdict = model.VerdictCandidate
 	}
 
@@ -486,6 +813,13 @@ func (e *Engine) finding(pr probe, pair resolve.Pair, found dest, status int) mo
 		"browser_host=" + pair.Browser.Host,
 	}
 
+	if found.quirk {
+		f.Evidence = append(f.Evidence,
+			"quirk_hosts="+strings.Join(resolve.QuirkHosts(found.url), ","),
+			"note=net/url refuses this authority; parsers disagree on the host",
+		)
+	}
+
 	if pr.blob != nil {
 		f.Evidence = append(f.Evidence,
 			"blob_field="+string(pr.blob.field),
@@ -493,7 +827,7 @@ func (e *Engine) finding(pr probe, pair resolve.Pair, found dest, status int) mo
 		)
 	}
 
-	f.Repro = "curl -sI " + pr.probed
+	f.Repro = "curl -sI '" + strings.ReplaceAll(pr.probed, "'", `'\''`) + "'"
 	f.ProbeURL = pr.probed
 
 	return f
@@ -513,12 +847,10 @@ func (pr probe) representation() model.Representation {
 	switch pr.mechanism() {
 	case mechHeader:
 		return model.RepresentationHeader
-	case mechCRLF:
+	case mechCRLF, mechPath:
 		return model.RepresentationPathSegment
 	case mechBlob:
 		return model.RepresentationOpaqueBlob
-	case mechMeta, mechRefresh:
-		return model.RepresentationQueryParameter
 	default:
 		return model.RepresentationQueryParameter
 	}
@@ -548,18 +880,71 @@ func joinPath(raw, suffix string) string {
 	return parsed.String()
 }
 
+// trustedHost is the host a validator is likely to allow, used wherever a
+// payload has to wear a trusted name to get past one.
+//
+// It refuses an internal address. The parameter's current value is the best
+// guess at what the endpoint trusts, but detour then puts that host back into
+// a payload, so a value already pointing at loopback or link-local would have
+// detour ask the target to reach it. Aiming anything at an internal address is
+// the operator's call on an authorized target and never a scanner's.
 func trustedHost(parsed *url.URL, current string) string {
-	if current != "" {
-		if u, err := url.Parse(current); err == nil && u.Hostname() != "" {
-			return u.Hostname()
-		}
-	}
-
-	if parsed != nil {
-		return parsed.Hostname()
+	if hosts := trustedHosts(parsed, current, nil); len(hosts) > 0 {
+		return hosts[0]
 	}
 
 	return ""
+}
+
+// trustedHosts lists the hosts a validator might allow, best guess first.
+//
+// A payload that has to wear a trusted name is useless wearing the wrong one,
+// and the right one is rarely in the parameter: a harvested URL says
+// `?next=/account` or `?url=https://cdn.example/x`, essentially never the
+// allowlisted host. Guessing a single candidate from the seed meant the entire
+// allowlist-bypass family silently found nothing on real corpora, which is
+// invisible precisely because a miss looks like a clean endpoint.
+//
+// So detour tries every host it has reason to believe: the one already in the
+// parameter, the endpoint's own host, and anything the JS stage read out of a
+// validator's allowlist.
+func trustedHosts(parsed *url.URL, current string, extra []string) []string {
+	origin := ""
+	if parsed != nil {
+		origin = parsed.Hostname()
+	}
+
+	out := make([]string, 0, len(extra)+2)
+	seen := map[string]struct{}{}
+
+	add := func(host string) {
+		host = safeHost(host, origin)
+		if host == "" {
+			return
+		}
+
+		if _, dup := seen[strings.ToLower(host)]; dup {
+			return
+		}
+
+		seen[strings.ToLower(host)] = struct{}{}
+
+		out = append(out, host)
+	}
+
+	if current != "" {
+		if u, err := url.Parse(current); err == nil {
+			add(u.Hostname())
+		}
+	}
+
+	add(origin)
+
+	for _, host := range extra {
+		add(host)
+	}
+
+	return out
 }
 
 func lookupQuery(q url.Values, name string) (string, bool) {
@@ -576,6 +961,9 @@ func lookupQuery(q url.Values, name string) (string, bool) {
 	return "", false
 }
 
+// hostOf is the source URL's own host, for the payload paths that have no
+// parameter value to learn from. It refuses an internal host for the same
+// reason trustedHost does.
 func hostOf(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -587,9 +975,6 @@ func hostOf(raw string) string {
 
 func cloneURL(u *url.URL) *url.URL {
 	cp := *u
-	if u.RawQuery != "" {
-		cp.RawQuery = u.RawQuery
-	}
 
 	return &cp
 }

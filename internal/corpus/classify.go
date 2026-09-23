@@ -36,6 +36,7 @@ var redirectParams = map[string]struct{}{
 	"callback": {}, "relaystate": {}, "checkout_url": {}, "image_url": {},
 	"go": {}, "login_url": {}, "logout_url": {}, "post_logout_redirect_uri": {},
 	"service": {}, "ref": {}, "referrer": {}, "domain": {}, "host": {},
+	"desthost": {}, "dest_host": {}, "hostname": {},
 }
 
 // RedirectParams returns the canonical redirect-shaped parameter names,

@@ -67,7 +67,7 @@ func sampleFindings() []model.Finding {
 	a.ProbeURL = "https://a.lab/go?url=https%3A%2F%2Fallowed.lab%40canary.invalid"
 	a.Evidence = []string{"status 302", "Location: https://allowed.lab@canary.invalid"}
 	a.Candidate = model.NewNavigationCandidate("https://a.lab/go", model.RepresentationQueryParameter)
-	a.Candidate.ParamName = "url"
+	a.Candidate.ParamName = paramURL
 	a.Capabilities.RedirectExternal = true
 	a.Capabilities.InputControlled = true
 
@@ -186,4 +186,44 @@ func TestSARIFEmptyIsValid(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw, &doc))
 	assert.Equal(t, "2.1.0", doc.Version)
 	assert.Empty(t, doc.Runs[0].Results)
+}
+
+// TestSARIFLevelOnlyOnFailures pins the SARIF 2.1.0 rule that a result which
+// is not a failure carries no level. Consumers reject or misreport the other
+// shape, and a candidate verdict is the common case.
+func TestSARIFLevelOnlyOnFailures(t *testing.T) {
+	t.Parallel()
+
+	findings := []model.Finding{}
+
+	for _, verdict := range []string{model.VerdictConfirmed, model.VerdictCandidate} {
+		f := model.NewFinding()
+		f.TechniqueID = techA01
+		f.Verdict = verdict
+		f.Capabilities.RedirectExternal = true
+		f.Capabilities.OAuthRedirectURI = true
+		f.Candidate.SourceURL = "https://app.example/r?url=x"
+		findings = append(findings, f)
+	}
+
+	var doc struct {
+		Runs []struct {
+			Results []struct {
+				Kind  string `json:"kind"`
+				Level string `json:"level"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+
+	raw, err := report.SARIF(findings, "test")
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(raw, &doc))
+	require.NotEmpty(t, doc.Runs)
+	require.Len(t, doc.Runs[0].Results, 2)
+
+	for _, r := range doc.Runs[0].Results {
+		if r.Kind != "fail" {
+			assert.Equal(t, "none", r.Level, "kind %q must not carry a level", r.Kind)
+		}
+	}
 }

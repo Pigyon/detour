@@ -81,7 +81,7 @@ func TestAttackCommandFilterAndOut(t *testing.T) {
 	assert.Contains(t, out.String(), `"OR-D01"`)
 	assert.NotContains(t, out.String(), `"OR-A01"`)
 
-	md, err := os.ReadFile(filepath.Join(outDir, "report.md")) //nolint:gosec // G304: outDir is t.TempDir output we wrote.
+	md, err := os.ReadFile(filepath.Join(outDir, "REPORT.md")) //nolint:gosec // G304: outDir is t.TempDir output we wrote.
 	require.NoError(t, err)
 	assert.Contains(t, string(md), "OR-D01")
 	assert.NotContains(t, string(md), "OR-A01")
@@ -111,8 +111,12 @@ func TestAttackCommandResume(t *testing.T) {
 		return errOut.String()
 	}
 
-	assert.NotEqual(t, "0 findings\n", run())
-	assert.Equal(t, "0 findings\n", run())
+	// A resumed run repeats no work and loses no findings, so it reports the
+	// same count. Reporting zero is how an interrupted scan used to come back
+	// empty and overwrite the report that had the answers.
+	first := run()
+	assert.NotEqual(t, "0 findings\n", first)
+	assert.Equal(t, first, run())
 }
 
 func attackArgs(extra ...string) []string {

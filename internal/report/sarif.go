@@ -21,7 +21,7 @@ const (
 const (
 	levelError   = "error"
 	levelWarning = "warning"
-	levelNote    = "note"
+	levelNone    = "none"
 )
 
 // sarifLog is the subset of SARIF 2.1.0 detour emits.
@@ -144,9 +144,8 @@ func rulesFor(findings []model.Finding) []sarifRuleDescr {
 			continue
 		}
 
-		level := levelFor(Derive(f.Capabilities).Severity)
-		if worst[id] == "" || levelRank(level) > levelRank(worst[id]) {
-			worst[id] = level
+		if worst[id] == "" {
+			worst[id] = levelForFinding(f)
 		}
 	}
 
@@ -174,13 +173,13 @@ func resultsFor(findings []model.Finding) []sarifResult {
 	out := make([]sarifResult, 0, len(findings))
 
 	for _, f := range findings {
-		score := Derive(f.Capabilities)
+		kind := kindFor(f)
 
 		result := sarifResult{
 			RuleID:  f.TechniqueID,
-			Level:   levelFor(score.Severity),
-			Message: sarifText{Text: message(f, score)},
-			Kind:    kindFor(f),
+			Level:   levelForKind(kind, levelForFinding(f)),
+			Message: sarifText{Text: message(f)},
+			Kind:    kind,
 			Locs: []sarifLocation{{
 				PhysicalLocation: sarifPhysical{
 					ArtifactLocation: sarifArtifact{URI: f.Candidate.SourceURL},
@@ -188,12 +187,10 @@ func resultsFor(findings []model.Finding) []sarifResult {
 			}},
 			PartialFingerprints: map[string]string{"detourRootCause/v1": Fingerprint(f)},
 			Properties: map[string]any{
-				"capabilities": capabilityList(f.Capabilities),
-				"verdict":      f.Verdict,
-				"payload":      f.Payload,
-				"cvss_3_1":     score.CVSS31,
-				"cvss_4_0":     score.CVSS40,
-				"rootCause":    RootCause(f),
+				"verdict":   f.Verdict,
+				"payload":   f.Payload,
+				"mechanism": f.Mechanism,
+				"rootCause": RootCause(f),
 			},
 		}
 
@@ -235,6 +232,36 @@ func webResponse(f model.Finding) *sarifWebResponse {
 	return &sarifWebResponse{Protocol: "http", StatusCode: status, Headers: headers}
 }
 
+// levelForKind applies the SARIF 2.1.0 rule that a result which is not a
+// failure carries no level.
+//
+// The spec allows `level` only when `kind` is "fail"; anything else must be
+// "none" or absent. Emitting a candidate as `kind: open` with `level: warning`
+// is rejected or misreported by consumers such as GitHub code scanning, and a
+// third of the results in a typical run were that shape.
+func levelForKind(kind, level string) string {
+	if kind != "fail" {
+		return levelNone
+	}
+
+	return level
+}
+
+// levelForFinding is how loudly a consumer should report this finding.
+//
+// detour does not score severity. A redirect that reaches an authorization
+// endpoint or executes script is worth more attention than one that does not,
+// and that is as far as the judgement goes; the program's own rubric decides
+// the rest.
+func levelForFinding(f model.Finding) string {
+	c := f.Capabilities
+	if c.JavaScriptScheme || c.DataScheme || c.OAuthRedirectURI || c.SAMLRelayState || c.SSRFChain {
+		return levelError
+	}
+
+	return levelWarning
+}
+
 // kindFor separates a proven finding from one still awaiting a browser.
 func kindFor(f model.Finding) string {
 	if f.Verdict == model.VerdictCandidate {
@@ -244,51 +271,22 @@ func kindFor(f model.Finding) string {
 	return "fail"
 }
 
-func message(f model.Finding, score Score) string {
+// message is the one-line summary a SARIF consumer shows.
+func message(f model.Finding) string {
 	var b strings.Builder
 
 	b.WriteString(techniqueTitle(f.TechniqueID))
-	b.WriteString(" on ")
-	b.WriteString(f.Candidate.SourceURL)
 
 	if f.Candidate.ParamName != "" {
-		b.WriteString(" via ")
+		b.WriteString(" in parameter ")
 		b.WriteString(f.Candidate.ParamName)
 	}
 
-	b.WriteString(". Suggested severity ")
-	b.WriteString(score.Severity)
-
-	if f.Rationale != "" {
-		b.WriteString(". ")
-		b.WriteString(f.Rationale)
-	}
+	b.WriteString(", reached with payload ")
+	b.WriteString(f.Payload)
+	b.WriteString(".")
 
 	return b.String()
-}
-
-func levelFor(severity string) string {
-	switch severity {
-	case SeverityCritical, SeverityHigh:
-		return levelError
-	case SeverityMedium:
-		return levelWarning
-	default:
-		return levelNote
-	}
-}
-
-func levelRank(level string) int {
-	switch level {
-	case levelError:
-		return 3
-	case levelWarning:
-		return 2
-	case levelNote:
-		return 1
-	default:
-		return 0
-	}
 }
 
 // classOf maps a technique id to its REFERENCE.md class.

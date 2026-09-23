@@ -111,11 +111,18 @@ func TestWrite(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(raw), &all))
 	require.Len(t, all, 1)
 
-	md := readOut(t, dir, "report.md")
-	assert.Contains(t, md, "# detour findings")
+	md := readOut(t, dir, "REPORT.md")
+	assert.Contains(t, md, "# Open redirects")
 	assert.Contains(t, md, techA01)
-	assert.Contains(t, md, "input_controlled")
+	assert.Contains(t, md, f.Candidate.SourceURL, "the run report groups by endpoint")
 	assert.NotContains(t, md, "\u2014")
+
+	// Every finding also gets a report of its own, ready to submit.
+	single := readOut(t, dir, filepath.Join("findings", "OR-A01-"+report.Fingerprint(f)[:8], "REPORT.md"))
+	assert.Contains(t, single, "## Proof of concept")
+	assert.Contains(t, single, "## Remediation")
+	assert.Contains(t, single, techA01)
+	assert.NotContains(t, single, "\u2014")
 }
 
 func readOut(t *testing.T, dir, name string) string {
@@ -132,4 +139,29 @@ func TestWriteEmptyDirRejected(t *testing.T) {
 
 	err := report.Write("", nil)
 	require.Error(t, err)
+}
+
+// TestFindingsJSONCarriesRootCause keeps the machine format useful: a reader
+// needs to know which defect a finding belongs to without re-deriving it.
+func TestFindingsJSONCarriesRootCause(t *testing.T) {
+	t.Parallel()
+
+	f := model.NewFinding()
+	f.TechniqueID = techA01
+	f.Candidate.SourceURL = "https://app.example/r?url=x"
+	f.Candidate.ParamName = paramURL
+
+	dir := t.TempDir()
+	require.NoError(t, report.WriteVersion(dir, []model.Finding{f}, "test"))
+
+	raw, err := os.ReadFile(filepath.Join(dir, "findings.json")) //nolint:gosec // G304: dir is t.TempDir().
+	require.NoError(t, err)
+
+	var out []map[string]any
+	require.NoError(t, json.Unmarshal(raw, &out))
+	require.Len(t, out, 1)
+
+	assert.Equal(t, techA01, out[0]["technique_id"])
+	assert.NotEmpty(t, out[0]["root_cause"])
+	assert.NotEmpty(t, out[0]["fingerprint"])
 }

@@ -21,7 +21,7 @@ var idSegment = regexp.MustCompile(`^(\d+|[0-9a-fA-F]{8,}|[0-9a-fA-F-]{36})$`)
 // Deduping by URL is the wrong axis and produces the reports triagers hate: a
 // hundred entries for one endpoint because a hundred payloads worked, or one
 // entry per article id. The defect is the host, the endpoint shape, the
-// parameter, and the technique. Everything else is a demonstration of it.
+// parameter, and the technique.
 func RootCause(f model.Finding) string {
 	parsed, err := url.Parse(f.Candidate.SourceURL)
 	if err != nil {
@@ -108,19 +108,6 @@ func evidenceRank(f model.Finding) int {
 	}
 
 	return rank
-}
-
-// Causes groups findings by root cause, for a report that wants to show the
-// other demonstrations under each defect.
-func Causes(findings []model.Finding) map[string][]model.Finding {
-	out := map[string][]model.Finding{}
-
-	for _, f := range findings {
-		cause := RootCause(f)
-		out[cause] = append(out[cause], f)
-	}
-
-	return out
 }
 
 // TechniqueIDs lists the distinct techniques in a finding set, sorted.

@@ -90,6 +90,10 @@ func (e *Engine) attackBlobStrategy(
 			continue
 		}
 
+		if payload.NeedsValue(p) && !safeValue(field.Value, hostOf(raw)) {
+			continue
+		}
+
 		expanded := payload.Expand(p, e.canary, trusted, field.Value)
 
 		probed, err := b.ReplaceStrategy(raw, field, expanded, strategy)
@@ -141,10 +145,16 @@ func blobContextFor(b decode.Blob, field decode.URLField) *blobContext {
 
 // hostOfField is the host a payload template should pose as: the envelope's
 // own current destination, falling back to the source host.
+// hostOfField is trustedHost for a destination that lives inside an envelope,
+// and refuses an internal host for the same reason.
 func hostOfField(field decode.URLField, raw string) string {
+	origin := hostOf(raw)
+
 	if u, err := url.Parse(field.Value); err == nil && u.Hostname() != "" {
-		return u.Hostname()
+		if host := safeHost(u.Hostname(), origin); host != "" {
+			return host
+		}
 	}
 
-	return hostOf(raw)
+	return origin
 }

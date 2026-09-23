@@ -9,30 +9,21 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/nedlir/detour/internal/model"
+	"github.com/nedlir/detour/internal/payload"
 )
 
 const (
-	fileJSONL = "findings.jsonl"
-	fileJSON  = "findings.json"
-	fileMD    = "report.md"
-	fileSARIF = "report.sarif"
-	dirPerm   = 0o750
-	filePerm  = 0o600
+	fileJSONL   = "findings.jsonl"
+	fileJSON    = "findings.json"
+	fileReport  = "REPORT.md"
+	dirFindings = "findings"
+	fileSARIF   = "report.sarif"
+	dirPerm     = 0o750
+	filePerm    = 0o600
 )
-
-var knownMechanisms = map[string]struct{}{
-	"header":  {},
-	"js":      {},
-	"meta":    {},
-	"refresh": {},
-	"crlf":    {},
-	"blob":    {},
-	"query":   {},
-}
 
 // ParseFilter splits a comma-separated mechanism list. An empty string means no filter.
 func ParseFilter(raw string) (map[string]struct{}, error) {
@@ -49,7 +40,7 @@ func ParseFilter(raw string) (map[string]struct{}, error) {
 			continue
 		}
 
-		if _, ok := knownMechanisms[mech]; !ok {
+		if !payload.KnownMechanism(mech) {
 			return nil, fmt.Errorf("unknown mechanism %q", mech)
 		}
 
@@ -110,7 +101,11 @@ func WriteVersion(dir string, findings []model.Finding, version string) error {
 		return err
 	}
 
-	if err := writeMarkdown(filepath.Join(dir, fileMD), unique); err != nil {
+	if err := writeRunReport(filepath.Join(dir, fileReport), unique); err != nil {
+		return err
+	}
+
+	if err := writeFindingReports(filepath.Join(dir, dirFindings), unique); err != nil {
 		return err
 	}
 
@@ -139,12 +134,18 @@ func writeJSONL(path string, findings []model.Finding) error {
 	return writeFile(path, []byte(b.String()))
 }
 
+// writeJSON emits the deduped findings with their root cause attached.
 func writeJSON(path string, findings []model.Finding) error {
-	if findings == nil {
-		findings = []model.Finding{}
+	out := make([]reportedFinding, 0, len(findings))
+	for _, f := range findings {
+		out = append(out, reportedFinding{
+			Finding:     f,
+			RootCause:   RootCause(f),
+			Fingerprint: Fingerprint(f),
+		})
 	}
 
-	raw, err := json.MarshalIndent(findings, "", "  ")
+	raw, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encoding findings json: %w", err)
 	}
@@ -154,142 +155,96 @@ func writeJSON(path string, findings []model.Finding) error {
 	return writeFile(path, raw)
 }
 
-func writeMarkdown(path string, findings []model.Finding) error {
+// reportedFinding is a finding plus the defect it belongs to.
+type reportedFinding struct {
+	model.Finding
+	RootCause   string `json:"root_cause"`
+	Fingerprint string `json:"fingerprint"`
+}
+
+// writeRunReport writes one report covering everything the run found, grouped
+// by the URL it was found on.
+func writeRunReport(path string, findings []model.Finding) error {
 	var b strings.Builder
 
-	b.WriteString("# detour findings\n\n")
+	b.WriteString("# Open redirects\n\n")
 
-	scored := ScoreAll(findings)
+	if len(findings) == 0 {
+		b.WriteString("No open redirects were confirmed.\n")
 
-	if _, err := fmt.Fprintf(&b, "%d distinct root causes, highest severity first.\n", len(scored)); err != nil {
-		return fmt.Errorf("writing report heading: %w", err)
+		return writeFile(path, []byte(b.String()))
 	}
 
-	for _, s := range scored {
-		if err := writeScoredMarkdown(&b, s); err != nil {
-			return err
+	fmt.Fprintf(&b, "%d confirmed on %d endpoints.\n", len(findings), len(byEndpoint(findings)))
+
+	for _, group := range byEndpoint(findings) {
+		fmt.Fprintf(&b, "\n## %s\n\n", group.endpoint)
+
+		for _, f := range group.findings {
+			fmt.Fprintf(&b, "- **%s** via `%s`\n", techniqueLine(f.TechniqueID), f.Payload)
+			fmt.Fprintf(&b, "  - %s\n", f.Repro)
+			fmt.Fprintf(&b, "  - report: `%s/REPORT.md`\n", findingDir(f))
 		}
 	}
 
 	return writeFile(path, []byte(b.String()))
 }
 
-func writeScoredMarkdown(b *strings.Builder, s Scored) error {
-	if _, err := fmt.Fprintf(b, "\n## %s: %s\n\n", heading(s.Finding), techniqueTitle(s.TechniqueID)); err != nil {
-		return fmt.Errorf("writing finding heading: %w", err)
-	}
-
-	if _, err := fmt.Fprintf(b, "- suggested severity: **%s** (%.1f, derived from capabilities, not asserted)\n",
-		s.Score.Severity, s.Score.Base); err != nil {
-		return fmt.Errorf("writing severity: %w", err)
-	}
-
-	if _, err := fmt.Fprintf(b, "- cvss 3.1: `%s`\n- cvss 4.0: `%s`\n", s.Score.CVSS31, s.Score.CVSS40); err != nil {
-		return fmt.Errorf("writing vectors: %w", err)
-	}
-
-	if err := writeFindingMarkdown(b, s.Finding); err != nil {
-		return err
-	}
-
-	if _, err := fmt.Fprintf(b, "- root cause: `%s`\n", RootCause(s.Finding)); err != nil {
-		return fmt.Errorf("writing root cause: %w", err)
-	}
-
-	_, err := fmt.Fprintf(b, "- remediation: %s\n", Remediation(s.TechniqueID))
-
-	return err
-}
-
-func writeFindingMarkdown(b *strings.Builder, f model.Finding) error {
-	if _, err := fmt.Fprintf(b, "\n## %s\n\n", heading(f)); err != nil {
-		return fmt.Errorf("writing finding heading: %w", err)
-	}
-
-	if _, err := fmt.Fprintf(b, "- source: %s\n", f.Candidate.SourceURL); err != nil {
-		return fmt.Errorf("writing finding source: %w", err)
-	}
-
-	if _, err := fmt.Fprintf(b, "- mechanism: %s\n", f.Mechanism); err != nil {
-		return fmt.Errorf("writing finding mechanism: %w", err)
-	}
-
-	if f.Verdict != "" {
-		if _, err := fmt.Fprintf(b, "- verdict: %s\n", f.Verdict); err != nil {
-			return fmt.Errorf("writing finding verdict: %w", err)
+// writeFindingReports writes one submittable report per finding, each in its
+// own directory so it can be handed over on its own.
+func writeFindingReports(dir string, findings []model.Finding) error {
+	for _, f := range findings {
+		into := filepath.Join(dir, findingDir(f))
+		if err := os.MkdirAll(into, dirPerm); err != nil {
+			return fmt.Errorf("creating finding directory: %w", err)
 		}
-	}
 
-	if _, err := fmt.Fprintf(b, "- payload: `%s`\n", f.Payload); err != nil {
-		return fmt.Errorf("writing finding payload: %w", err)
-	}
-
-	if f.Repro != "" {
-		if _, err := fmt.Fprintf(b, "- repro: `%s`\n", f.Repro); err != nil {
-			return fmt.Errorf("writing finding repro: %w", err)
-		}
-	}
-
-	caps := capabilityList(f.Capabilities)
-	if len(caps) > 0 {
-		if _, err := fmt.Fprintf(b, "- capabilities: %s\n", strings.Join(caps, ", ")); err != nil {
-			return fmt.Errorf("writing finding capabilities: %w", err)
-		}
-	}
-
-	for _, ev := range f.Evidence {
-		if _, err := fmt.Fprintf(b, "- evidence: %s\n", ev); err != nil {
-			return fmt.Errorf("writing finding evidence: %w", err)
+		if err := writeFile(filepath.Join(into, fileReport), []byte(Render(f))); err != nil {
+			return err
 		}
 	}
 
 	return nil
 }
 
-func heading(f model.Finding) string {
-	if f.TechniqueID != "" {
-		return f.TechniqueID
+// findingDir names a finding's directory: the technique and enough of the
+// fingerprint to stay unique, so the same defect lands in the same place on
+// every run.
+func findingDir(f model.Finding) string {
+	id := f.TechniqueID
+	if id == "" {
+		id = "finding"
 	}
 
-	return "finding"
+	return id + "-" + Fingerprint(f)[:8]
 }
 
-func capabilityList(c model.CapabilitySet) []string {
-	names := make([]string, 0, 16)
+// endpointGroup is the findings on one URL.
+type endpointGroup struct {
+	endpoint string
+	findings []model.Finding
+}
 
-	names = append(names, escalateNames(c)...)
+// byEndpoint groups findings by the URL they were found on, first seen first.
+func byEndpoint(findings []model.Finding) []endpointGroup {
+	index := map[string]int{}
+	out := []endpointGroup{}
 
-	if c.RedirectExternal {
-		names = append(names, "redirect.external")
+	for _, f := range findings {
+		endpoint := f.Candidate.SourceURL
+
+		at, seen := index[endpoint]
+		if !seen {
+			index[endpoint] = len(out)
+			out = append(out, endpointGroup{endpoint: endpoint, findings: []model.Finding{f}})
+
+			continue
+		}
+
+		out[at].findings = append(out[at].findings, f)
 	}
 
-	if c.BrowserConfirmed {
-		names = append(names, "browser_confirmed")
-	}
-
-	if c.InputControlled {
-		names = append(names, "input_controlled")
-	}
-
-	if c.JavaScriptScheme {
-		names = append(names, "javascript_scheme")
-	}
-
-	if c.SSRFChain {
-		names = append(names, "ssrf_chain")
-	}
-
-	if c.RefererLeak {
-		names = append(names, "referer_leak")
-	}
-
-	if c.HopCount > 0 {
-		names = append(names, fmt.Sprintf("hop_count=%d", c.HopCount))
-	}
-
-	sort.Strings(names)
-
-	return names
+	return out
 }
 
 func writeFile(path string, data []byte) error {
@@ -330,31 +285,4 @@ func DecodeJSONL(raw []byte) ([]model.Finding, error) {
 
 		out = append(out, f)
 	}
-}
-
-// escalateNames lists the escalation capabilities a set carries. It mirrors
-// the escalate package's own list, kept here so report does not depend on it.
-func escalateNames(c model.CapabilitySet) []string {
-	out := []string{}
-
-	for _, entry := range []struct {
-		on   bool
-		name string
-	}{
-		{c.OAuthRedirectURI, "oauth.redirect_uri"},
-		{c.PostLogoutRedirect, "oidc.post_logout_redirect_uri"},
-		{c.SAMLRelayState, "saml.relaystate"},
-		{c.DataScheme, "data_scheme"},
-		{c.CSPBypass, "csp_bypass"},
-		{c.CSRFReferer, "csrf.referer_bypass"},
-		{c.CachePoisoned, "cache_poisoned"},
-		{c.CrossProtocol, "cross_protocol"},
-		{c.PhishingVector, "phishing_vector"},
-	} {
-		if entry.on {
-			out = append(out, entry.name)
-		}
-	}
-
-	return out
 }

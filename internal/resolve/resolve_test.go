@@ -9,6 +9,7 @@ import (
 )
 
 const (
+	namedHost   = "allowed.example"
 	loopbackV4  = "127.0.0.1"
 	attackerURL = "https://evil.example/"
 )
@@ -183,4 +184,231 @@ func FuzzRFC3986(f *testing.F) {
 		_, _ = resolve.Browser(base, loc)
 		_, _ = resolve.Interpret(base, loc)
 	})
+}
+
+// TestCanonicalHostAddressEncodings is the OR-A15 half of the resolver: every
+// spelling of an address has to reduce to one dotted quad, or an allowlist
+// comparison upstream is comparing strings rather than destinations.
+func TestCanonicalHostAddressEncodings(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		host string
+		want string
+	}{
+		{name: "dotted quad is already canonical", host: loopbackV4, want: loopbackV4},
+		{name: "decimal", host: "2130706433", want: loopbackV4},
+		{name: "hex", host: "0x7f000001", want: loopbackV4},
+		{name: "octal", host: "0177.0.0.1", want: loopbackV4},
+		{name: "two part", host: "127.1", want: loopbackV4},
+		{name: "mixed radix two part", host: "0x7f.1", want: loopbackV4},
+		{name: "ipv4 mapped ipv6", host: "::ffff:127.0.0.1", want: loopbackV4},
+		{name: "link local decimal", host: "2852039166", want: "169.254.169.254"},
+		{name: "link local octal", host: "0251.0376.0251.0376", want: "169.254.169.254"},
+		{name: "a name is left alone", host: namedHost, want: namedHost},
+		{name: "a name of digits and dots that is not an address", host: "1.2.3.4.5", want: "1.2.3.4.5"},
+		{name: "octet out of range is not an address", host: "999.0.0.1", want: "999.0.0.1"},
+		{name: "trailing dot is not an address", host: loopbackV4 + ".", want: loopbackV4},
+		{name: "empty", host: "", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, resolve.CanonicalHost(tt.host))
+		})
+	}
+}
+
+// TestSameHostAcrossEncodings is the property the technique actually turns on.
+func TestSameHostAcrossEncodings(t *testing.T) {
+	t.Parallel()
+
+	for _, encoded := range []string{"2130706433", "0x7f000001", "0177.0.0.1", "127.1"} {
+		assert.True(t, resolve.SameHost(loopbackV4, encoded), "%s must equal %s", encoded, loopbackV4)
+	}
+
+	assert.False(t, resolve.SameHost(loopbackV4, "2130706434"))
+}
+
+// TestMetaRefreshAttributeForms covers what browsers accept. An unquoted
+// content attribute navigates exactly like a quoted one, and a page may carry
+// more than one refresh tag.
+func TestMetaRefreshAttributeForms(t *testing.T) {
+	t.Parallel()
+
+	const want = "https://c.invalid/"
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "double quoted", body: `<meta http-equiv="refresh" content="0;url=` + want + `">`},
+		{name: "single quoted", body: `<meta http-equiv='refresh' content='0;url=` + want + `'>`},
+		{name: "unquoted", body: `<meta http-equiv=refresh content=0;url=` + want + `>`},
+		{name: "attributes reversed", body: `<meta content=0;url=` + want + ` http-equiv=refresh>`},
+		{name: "not the first tag", body: `<meta charset=utf-8><meta http-equiv=refresh content="1;url=` + want + `">`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := resolve.MetaRefresh([]byte(tt.body))
+			require.True(t, ok)
+			assert.Equal(t, []string{want}, got)
+		})
+	}
+}
+
+func TestMetaRefreshIgnoresOtherTags(t *testing.T) {
+	t.Parallel()
+
+	_, ok := resolve.MetaRefresh([]byte(`<meta name=description content="0;url=https://c.invalid/">`))
+	assert.False(t, ok, "only a refresh directive navigates")
+}
+
+// TestParseRefreshOffsetIsTakenOnTheOriginal is the regression for an index
+// computed on a lowercased copy. strings.ToLower can change a string's byte
+// length, so such an index points at the wrong place, or past the end.
+func TestParseRefreshOffsetIsTakenOnTheOriginal(t *testing.T) {
+	t.Parallel()
+
+	const dest = "https://c.invalid/"
+
+	tests := []struct {
+		name   string
+		header string
+	}{
+		{name: "plain", header: "0;url=" + dest},
+		{name: "uppercase directive", header: "0;URL=" + dest},
+		{name: "mixed case", header: "0;UrL=" + dest},
+		{name: "space after the directive", header: "0;URL= " + dest},
+		{name: "a rune whose lowercase is a different byte length", header: "0;\u0130\u0130URL=" + dest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := resolve.ParseRefresh(tt.header)
+			require.True(t, ok)
+			assert.Equal(t, dest, got)
+		})
+	}
+}
+
+// TestMetaRefreshIgnoresInertMarkup keeps detour from reporting a tag a
+// browser never parses as one.
+func TestMetaRefreshIgnoresInertMarkup(t *testing.T) {
+	t.Parallel()
+
+	const tag = `<meta http-equiv="refresh" content="0;url=https://c.invalid/">`
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "inside a comment", body: `<!-- ` + tag + ` -->`},
+		{name: "inside a script string", body: `<script>var s='` + tag + `';</script>`},
+		{name: "inside a textarea", body: `<textarea>` + tag + `</textarea>`},
+		{name: "inside a template", body: `<template>` + tag + `</template>`},
+		{name: "a different http-equiv", body: `<meta http-equiv="refresh-policy" content="0;url=https://c.invalid/">`},
+		{name: "a different tag name", body: `<metafoo http-equiv=refresh content=0;url=https://c.invalid/>`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, ok := resolve.MetaRefresh([]byte(tt.body))
+			assert.False(t, ok, "this navigates nothing: %s", tt.body)
+		})
+	}
+}
+
+// TestMetaRefreshReturnsEveryDestination is the regression for returning only
+// the first. A benign refresh ahead of the attacker-controlled one used to
+// hide the finding entirely.
+func TestMetaRefreshReturnsEveryDestination(t *testing.T) {
+	t.Parallel()
+
+	body := `<meta http-equiv=refresh content="0;url=/safe">` +
+		`<meta http-equiv=refresh content="1;url=https://c.invalid/">`
+
+	got, ok := resolve.MetaRefresh([]byte(body))
+	require.True(t, ok)
+	assert.Equal(t, []string{"/safe", "https://c.invalid/"}, got)
+}
+
+// TestMetaRefreshOrderingAndRegions pins the cases an adversarial review found:
+// a comment opener inside a script string must not swallow a real tag, an
+// unterminated region must run to the end the way a browser reads it, and a
+// missing space between attributes is a recoverable parse error that browsers
+// act on.
+func TestMetaRefreshOrderingAndRegions(t *testing.T) {
+	t.Parallel()
+
+	const dest = "https://c.invalid/"
+
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "a comment opener inside a script string is not a comment",
+			body: `<script>x = "<!--"</script><meta http-equiv=refresh content="0;url=` + dest + `"><!-- tail -->`,
+			want: true,
+		},
+		{
+			name: "no space between attributes still navigates",
+			body: `<meta http-equiv="refresh"content="0;url=` + dest + `">`,
+			want: true,
+		},
+		{
+			name: "an unterminated comment hides everything after it",
+			body: `<!-- <meta http-equiv=refresh content="0;url=` + dest + `">`,
+			want: false,
+		},
+		{
+			name: "a tag inside a style block is text",
+			body: `<style>/*<meta http-equiv=refresh content="0;url=` + dest + `">*/</style>`,
+			want: false,
+		},
+		{
+			name: "an unterminated script hides everything after it",
+			body: `<script>var s = "<meta http-equiv=refresh content='0;url=` + dest + `'>"`,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := resolve.MetaRefresh([]byte(tt.body))
+			assert.Equal(t, tt.want, ok, "got %v", got)
+
+			if tt.want {
+				assert.Equal(t, []string{dest}, got)
+			}
+		})
+	}
+}
+
+// TestParseRefreshKeepsQuotesOwnedByTheValue is the regression for trimming
+// both quote characters off both ends.
+func TestParseRefreshKeepsQuotesOwnedByTheValue(t *testing.T) {
+	t.Parallel()
+
+	got, ok := resolve.ParseRefresh(`0;url=/x?a='b'`)
+	require.True(t, ok)
+	assert.Equal(t, `/x?a='b'`, got)
+
+	quoted, ok := resolve.ParseRefresh(`0;url="https://c.invalid/"`)
+	require.True(t, ok)
+	assert.Equal(t, "https://c.invalid/", quoted)
 }
