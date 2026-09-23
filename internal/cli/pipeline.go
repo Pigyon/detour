@@ -260,15 +260,7 @@ func pipelineURLs(
 		slog.Debug("harvest source failed", "reason", msg)
 	}
 
-	// Every source failing looks exactly like a target with nothing to find,
-	// and at the default log level it printed nothing at all. An operator
-	// reading "0 urls" deserves to know whether that is the answer or an
-	// outage.
-	if len(harvested.URLs) == 0 && len(harvested.Errors) > 0 {
-		_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
-			"harvest: every source failed (%d errors); run with --log-level debug for detail\n",
-			len(harvested.Errors))
-	}
+	warnHarvest(cmd, harvested)
 
 	_, base := splitTarget(target)
 	raw = append(raw, base)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 
@@ -101,6 +102,8 @@ func runHarvest(cmd *cobra.Command, target string, flags *reconFlags) error {
 
 	result := harvestFor(cmd.Context(), cfg, c, target, flags)
 
+	warnHarvest(cmd, result)
+
 	if flags.outDir != "" {
 		if err := writeArtifact(flags.outDir, "harvested.json", result); err != nil {
 			return err
@@ -108,6 +111,27 @@ func runHarvest(cmd *cobra.Command, target string, flags *reconFlags) error {
 	}
 
 	return writeJSON(cmd, result, fmt.Sprintf("%d urls from %d sources", len(result.URLs), len(result.Sources)))
+}
+
+// warnHarvest says on stderr when a harvest returned nothing because every
+// source failed.
+//
+// Every source failing looks exactly like a target with nothing to find, and
+// at the default log level it printed nothing at all. An operator reading
+// "0 urls" deserves to know whether that is the answer or an outage, and that
+// is as true of `detour harvest` as it is of a full run.
+func warnHarvest(cmd *cobra.Command, result harvest.Result) {
+	for _, msg := range result.Errors {
+		slog.Debug("harvest source failed", "reason", msg)
+	}
+
+	if len(result.URLs) > 0 || len(result.Errors) == 0 {
+		return
+	}
+
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+		"harvest: every source failed (%d errors); run with --log-level debug for detail\n",
+		len(result.Errors))
 }
 
 // harvestFor runs the harvest stage for a target, which may be a bare domain
