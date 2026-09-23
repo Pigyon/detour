@@ -91,3 +91,21 @@ func TestLoadFile(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, g.Check("www.example.com"))
 }
+
+// TestGuardRefusesDestinationSubdomains is the regression for a credential
+// leak. Detection counts a subdomain of the destination as a hit, so the guard
+// has to refuse one too, or detour requests the very names its own payloads
+// aim at and attaches the operator's headers and cookies to them.
+func TestGuardRefusesDestinationSubdomains(t *testing.T) {
+	t.Parallel()
+
+	guard := scope.New("google.com")
+
+	for _, host := range []string{"google.com", "www.google.com", "a.b.google.com"} {
+		require.Error(t, guard.Check(host), "%s is the destination and must never be contacted", host)
+	}
+
+	for _, host := range []string{"notgoogle.com", "google.com.evil.test", "example.org"} {
+		require.NoError(t, guard.Check(host), "%s is not the destination", host)
+	}
+}

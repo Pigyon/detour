@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"os"
 	"strings"
+
+	"github.com/nedlir/detour/internal/resolve"
 )
 
 var (
@@ -21,9 +23,10 @@ var (
 
 // Guard is the bottom-of-stack check for every outbound request.
 type Guard struct {
-	allows []hostRule
-	denies []hostRule
-	canary string
+	allows  []hostRule
+	denies  []hostRule
+	canary  string
+	refused []string
 }
 
 type hostRule struct {
@@ -167,12 +170,44 @@ func HostOf(rawURL string) (string, error) {
 	return normalizeHost(host), nil
 }
 
+// isCanary refuses the redirect destination and everything under it.
+//
+// The subdomain half matters. Detection counts a subdomain as a hit, because
+// several techniques land on allowed.example.destination rather than on the
+// destination itself, and whoever holds a domain holds every name beneath it.
+// A guard that only refused the exact host would therefore let detour request
+// the very names its own payloads aim at, with the operator's credentials
+// attached. That was inert while the destination was a non-resolving .invalid
+// name and is not inert now that it can be a real domain.
 func (g *Guard) isCanary(host string) bool {
-	if g.canary == "" {
-		return false
+	if under(host, g.canary) {
+		return true
 	}
 
-	return host == g.canary
+	for _, extra := range g.refused {
+		if under(host, extra) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// under reports whether host is name or sits beneath it.
+func under(host, name string) bool {
+	return name != "" && (host == name || strings.HasSuffix(host, "."+name))
+}
+
+// Refuse adds a destination the guard will never contact, alongside the
+// primary one. The second probe of the input_controlled check points at its
+// own host, and that host is no more ours to request than the first.
+func (g *Guard) Refuse(host string) {
+	host = normalizeHost(host)
+	if host == "" {
+		return
+	}
+
+	g.refused = append(g.refused, host)
 }
 
 func (g *Guard) matches(rules []hostRule, host string) bool {
@@ -221,6 +256,13 @@ func parseRule(line string) (hostRule, error) {
 	return hostRule{host: host, isWildcard: isWildcard}, nil
 }
 
+// normalizeHost reduces a host to the form the guard compares.
+//
+// It ends by handing the result to resolve.CanonicalHost, so the guard and the
+// detection side agree on what a host is. They did not, and the disagreement
+// was exploitable: a trailing dot is a legal, fully equivalent way to write a
+// fully qualified name, and "google.com." reached the network while
+// "google.com" was refused.
 func normalizeHost(host string) string {
 	host = strings.TrimSpace(host)
 	host = strings.TrimPrefix(host, "*.")
@@ -233,5 +275,8 @@ func normalizeHost(host string) string {
 	host = strings.TrimPrefix(host, "[")
 	host = strings.TrimSuffix(host, "]")
 
-	return host
+	// A name may carry several trailing dots and still resolve.
+	host = strings.TrimRight(host, ".")
+
+	return resolve.CanonicalHost(host)
 }
