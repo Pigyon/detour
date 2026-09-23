@@ -6,10 +6,6 @@
 // client, takes no context, and has no way to reach the network, so it cannot
 // complete an OAuth dance, ask a server-side fetcher to touch an internal
 // address, or poison a shared cache even by accident.
-//
-// The distinction matters because several of these chains are genuinely
-// intrusive to demonstrate. Reporting the capability is honest and safe;
-// proving it is the program owner's decision, not a scanner's.
 package escalate
 
 import (
@@ -126,26 +122,31 @@ func applyScheme(caps model.CapabilitySet, payload string) model.CapabilitySet {
 	return caps
 }
 
-// techniqueCapabilities maps a technique id to what its class implies.
-var techniqueCapabilities = map[string]func(model.CapabilitySet) model.CapabilitySet{
-	"OR-D05": func(c model.CapabilitySet) model.CapabilitySet { c.RefererLeak = true; return c },
-	"OR-F02": func(c model.CapabilitySet) model.CapabilitySet { c.CSPBypass = true; return c },
-	"OR-F03": func(c model.CapabilitySet) model.CapabilitySet { c.SSRFChain = true; return c },
-	"OR-F04": func(c model.CapabilitySet) model.CapabilitySet { c.RefererLeak = true; return c },
-	"OR-F05": func(c model.CapabilitySet) model.CapabilitySet { c.PhishingVector = true; return c },
-	"OR-F06": func(c model.CapabilitySet) model.CapabilitySet { c.CSRFReferer = true; return c },
-	"OR-F08": func(c model.CapabilitySet) model.CapabilitySet { c.CrossProtocol = true; return c },
-	"OR-F10": func(c model.CapabilitySet) model.CapabilitySet { c.CachePoisoned = true; return c },
-	"OR-E01": func(c model.CapabilitySet) model.CapabilitySet { c.JavaScriptScheme = true; return c },
-	"OR-E02": func(c model.CapabilitySet) model.CapabilitySet { c.DataScheme = true; return c },
-	"OR-E03": func(c model.CapabilitySet) model.CapabilitySet { c.CrossProtocol = true; return c },
-	"OR-A10": func(c model.CapabilitySet) model.CapabilitySet { c.OAuthRedirectURI = true; return c },
-	"OR-D04": func(c model.CapabilitySet) model.CapabilitySet { c.SAMLRelayState = true; return c },
-}
-
+// applyTechnique adds what a technique's class implies on its own.
 func applyTechnique(caps model.CapabilitySet, technique string) model.CapabilitySet {
-	if apply, ok := techniqueCapabilities[technique]; ok {
-		return apply(caps)
+	switch technique {
+	case "OR-D05", "OR-F04":
+		caps.RefererLeak = true
+	case "OR-F02":
+		caps.CSPBypass = true
+	case "OR-F03":
+		caps.SSRFChain = true
+	case "OR-F05":
+		caps.PhishingVector = true
+	case "OR-F06":
+		caps.CSRFReferer = true
+	case "OR-F08", "OR-E03":
+		caps.CrossProtocol = true
+	case "OR-F10":
+		caps.CachePoisoned = true
+	case "OR-E01":
+		caps.JavaScriptScheme = true
+	case "OR-E02":
+		caps.DataScheme = true
+	case "OR-A10":
+		caps.OAuthRedirectURI = true
+	case "OR-D04":
+		caps.SAMLRelayState = true
 	}
 
 	return caps
