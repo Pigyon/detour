@@ -39,10 +39,22 @@ func StripSuffix(token string) (string, string) {
 	return token, ""
 }
 
+// maxTokenLen bounds what is treated as an opaque token.
+//
+// Nothing above this is a navigation envelope, and the cost of pretending
+// otherwise is real: every transport is tried over the whole token, each doing
+// a decode and a re-encode for the round-trip check, so a 40MB href costs
+// hundreds of megabytes. Crawled pages are attacker-influenced input.
+const maxTokenLen = 256 << 10
+
 // IsOpaque reports whether token looks like encoded state: long enough, drawn
 // from an encoding alphabet, and high-entropy. It is a pre-filter that saves
 // work; the decode itself is what decides.
 func IsOpaque(token string) bool {
+	if len(token) > maxTokenLen {
+		return false
+	}
+
 	if len(token) < minTokenLen {
 		return false
 	}

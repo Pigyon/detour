@@ -7,19 +7,6 @@ import (
 	"github.com/nedlir/detour/internal/model"
 )
 
-// Neutralization exists because preserving an envelope is not always the way
-// in.
-//
-// Rewriting only the destination is the most credible mutation and it is
-// always tried first: every other byte is the vendor's, so a server that
-// accepts it has no argument left. But a wrapper often binds the destination
-// to a per-message value, and then a surgical swap is rejected while a fully
-// synthetic envelope sails through. That is not the envelope being validated,
-// it is the envelope being recognized, and a scanner that only ever perturbs
-// fields will call such a target safe when it is not.
-//
-// So the second strategy replaces the per-message parts with inert values of
-// the same shape, and keeps everything structural.
 var (
 	hexDigest  = regexp.MustCompile(`^[0-9a-fA-F]{16,64}$`)
 	uuidValue  = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
