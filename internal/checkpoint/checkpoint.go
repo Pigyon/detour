@@ -13,19 +13,32 @@ import (
 )
 
 // SchemaVersion is written on every checkpoint record.
-const SchemaVersion = "1"
+//
+// Version 2 keys an attempt by the request that was actually sent. Version 1
+// keyed it by source, expanded payload and technique, which two different
+// probes of the same source can share: one envelope carrying the destination
+// in two fields produces two attempts with the same three values. The first
+// one's miss then suppressed the second one's hit, and a run with --resume
+// quietly reported one finding fewer than the same scan without it.
+//
+// Records written under another version are ignored rather than adapted. A
+// v1 record has no attempt to key on, and guessing one would resurrect the
+// bug this version exists to fix.
+const SchemaVersion = "2"
 
 const maxLine = 1 << 20
 
-// Record is one attempted candidate + payload and its verdict.
+// Record is one attempt and its verdict.
 //
-// A hit carries the finding it produced. Without it a resumed run skips the
-// work and has nothing to show for it, so an interrupted scan comes back
-// reporting zero and overwrites the report that had the answers.
+// Attempt is the request that was sent, which is what makes two attempts
+// distinguishable. A hit carries the finding it produced: without it a
+// resumed run skips the work and has nothing to show for it, so an
+// interrupted scan comes back reporting zero and overwrites the report that
+// had the answers.
 type Record struct {
 	SchemaVersion string         `json:"schema_version"`
 	Source        string         `json:"source"`
-	Payload       string         `json:"payload"`
+	Attempt       string         `json:"attempt"`
 	Technique     string         `json:"technique"`
 	Hit           bool           `json:"hit"`
 	Finding       *model.Finding `json:"finding,omitempty"`
@@ -57,7 +70,7 @@ func Open(path string) (*Store, error) {
 }
 
 // Recover returns the finding an earlier run recorded for this attempt.
-func (s *Store) Recover(source, payload, technique string) (model.Finding, bool) {
+func (s *Store) Recover(source, attempt, technique string) (model.Finding, bool) {
 	if s == nil {
 		return model.Finding{}, false
 	}
@@ -65,7 +78,7 @@ func (s *Store) Recover(source, payload, technique string) (model.Finding, bool)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	f, ok := s.done[key(source, payload, technique)]
+	f, ok := s.done[key(source, attempt, technique)]
 
 	return f, ok
 }
@@ -85,8 +98,8 @@ func (s *Store) Close() error {
 	return nil
 }
 
-// Seen reports whether source+payload+technique was already attempted.
-func (s *Store) Seen(source, payload, technique string) bool {
+// Seen reports whether this attempt was already made.
+func (s *Store) Seen(source, attempt, technique string) bool {
 	if s == nil {
 		return false
 	}
@@ -94,22 +107,22 @@ func (s *Store) Seen(source, payload, technique string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, ok := s.seen[key(source, payload, technique)]
+	_, ok := s.seen[key(source, attempt, technique)]
 
 	return ok
 }
 
 // RecordAttempt appends a verdict unless that attempt is already stored.
-func (s *Store) RecordAttempt(source, payload, technique string, hit bool) error {
-	return s.record(source, payload, technique, hit, nil)
+func (s *Store) RecordAttempt(source, attempt, technique string, hit bool) error {
+	return s.record(source, attempt, technique, hit, nil)
 }
 
 // RecordHit appends a verdict together with the finding it produced.
-func (s *Store) RecordHit(source, payload, technique string, f model.Finding) error {
-	return s.record(source, payload, technique, true, &f)
+func (s *Store) RecordHit(source, attempt, technique string, f model.Finding) error {
+	return s.record(source, attempt, technique, true, &f)
 }
 
-func (s *Store) record(source, payload, technique string, hit bool, f *model.Finding) error {
+func (s *Store) record(source, attempt, technique string, hit bool, f *model.Finding) error {
 	if s == nil {
 		return nil
 	}
@@ -117,7 +130,7 @@ func (s *Store) record(source, payload, technique string, hit bool, f *model.Fin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	k := key(source, payload, technique)
+	k := key(source, attempt, technique)
 	if _, ok := s.seen[k]; ok {
 		return nil
 	}
@@ -125,7 +138,7 @@ func (s *Store) record(source, payload, technique string, hit bool, f *model.Fin
 	rec := Record{
 		SchemaVersion: SchemaVersion,
 		Source:        source,
-		Payload:       payload,
+		Attempt:       attempt,
 		Technique:     technique,
 		Hit:           hit,
 		Finding:       f,
@@ -168,11 +181,15 @@ func Load(r io.Reader) (seen map[string]struct{}, done map[string]model.Finding)
 			continue
 		}
 
-		if rec.Source == "" && rec.Payload == "" && rec.Technique == "" {
+		if rec.SchemaVersion != SchemaVersion {
 			continue
 		}
 
-		k := key(rec.Source, rec.Payload, rec.Technique)
+		if rec.Source == "" && rec.Attempt == "" && rec.Technique == "" {
+			continue
+		}
+
+		k := key(rec.Source, rec.Attempt, rec.Technique)
 		seen[k] = struct{}{}
 
 		if rec.Finding != nil {
@@ -200,6 +217,6 @@ func loadPath(path string) (map[string]struct{}, map[string]model.Finding, error
 	return seen, done, nil
 }
 
-func key(source, payload, technique string) string {
-	return source + "\x00" + payload + "\x00" + technique
+func key(source, attempt, technique string) string {
+	return source + "\x00" + attempt + "\x00" + technique
 }

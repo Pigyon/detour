@@ -35,7 +35,7 @@ func TestLoadSkipsJunk(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "junk.ckpt")
-	raw := "{\"schema_version\":\"1\",\"source\":\"https://a.example/\",\"payload\":\"p\",\"technique\":\"OR-A01\",\"hit\":true}\n" +
+	raw := "{\"schema_version\":\"2\",\"source\":\"https://a.example/\",\"attempt\":\"p\",\"technique\":\"OR-A01\",\"hit\":true}\n" +
 		"{not json\n" +
 		"\n"
 	require.NoError(t, os.WriteFile(path, []byte(raw), 0o600))
@@ -44,6 +44,61 @@ func TestLoadSkipsJunk(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	assert.True(t, store.Seen("https://a.example/", "p", "OR-A01"))
+}
+
+// TestLoadIgnoresOtherSchemaVersions keeps a v1 file from being read as v2.
+//
+// A v1 record has no attempt field, so every one of them would key on the
+// empty string and the whole scan would look complete after one line.
+func TestLoadIgnoresOtherSchemaVersions(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "v1.ckpt")
+	raw := "{\"schema_version\":\"1\",\"source\":\"https://a.example/\",\"payload\":\"p\",\"technique\":\"OR-A01\",\"hit\":true}\n"
+	require.NoError(t, os.WriteFile(path, []byte(raw), 0o600))
+
+	store, err := checkpoint.Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	assert.False(t, store.Seen("https://a.example/", "p", "OR-A01"),
+		"a record from another schema version must not be trusted")
+	assert.False(t, store.Seen("https://a.example/", "", "OR-A01"),
+		"and must not collapse onto the empty attempt")
+}
+
+// TestAttemptsWithTheSameTechniqueStayDistinct is the defect this schema
+// exists for: one envelope carrying the destination in two fields produced two
+// attempts that differed only in the request, and keying without it let the
+// first one's miss suppress the second one's hit.
+func TestAttemptsWithTheSameTechniqueStayDistinct(t *testing.T) {
+	t.Parallel()
+
+	const (
+		source = "https://a.example/go"
+		tech   = "OR-B01"
+	)
+
+	path := filepath.Join(t.TempDir(), "two.ckpt")
+	store, err := checkpoint.Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	require.NoError(t, store.RecordAttempt(source, source+"?b=1", tech, false))
+
+	assert.False(t, store.Seen(source, source+"?b=2", tech),
+		"a different request is a different attempt")
+
+	f := model.NewFinding()
+	f.TechniqueID = tech
+	require.NoError(t, store.RecordHit(source, source+"?b=2", tech, f))
+
+	recovered, ok := store.Recover(source, source+"?b=2", tech)
+	require.True(t, ok)
+	assert.Equal(t, tech, recovered.TechniqueID)
+
+	_, ok = store.Recover(source, source+"?b=1", tech)
+	assert.False(t, ok, "the attempt that missed still has no finding")
 }
 
 func TestOpenMissingFile(t *testing.T) {
@@ -59,6 +114,7 @@ func TestOpenMissingFile(t *testing.T) {
 }
 
 func FuzzLoad(f *testing.F) {
+	f.Add("{\"schema_version\":\"2\",\"source\":\"https://a.example/\",\"attempt\":\"p\",\"technique\":\"OR-A01\",\"hit\":false}\n")
 	f.Add("{\"schema_version\":\"1\",\"source\":\"https://a.example/\",\"payload\":\"p\",\"technique\":\"OR-A01\",\"hit\":false}\n")
 	f.Add("{")
 	f.Add("")

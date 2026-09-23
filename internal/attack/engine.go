@@ -757,12 +757,13 @@ func (e *Engine) probeCRLF(ctx context.Context, raw string, p payload.Payload) (
 
 func (e *Engine) confirm(ctx context.Context, pr probe) (model.Finding, bool, error) {
 	technique := pr.techniqueID()
+	attempt := pr.attemptKey()
 
 	// A completed attempt is not repeated, and a completed attempt that found
 	// something hands the finding straight back. Skipping the work and the
 	// result both is how a resumed run reported nothing at all.
-	if e.checkpoint != nil && e.checkpoint.Seen(pr.source, pr.expanded, technique) {
-		recovered, ok := e.checkpoint.Recover(pr.source, pr.expanded, technique)
+	if e.checkpoint != nil && e.checkpoint.Seen(pr.source, attempt, technique) {
+		recovered, ok := e.checkpoint.Recover(pr.source, attempt, technique)
 
 		return recovered, ok, nil
 	}
@@ -783,7 +784,7 @@ func (e *Engine) confirm(ctx context.Context, pr probe) (model.Finding, bool, er
 	}
 
 	if !hit {
-		if err := e.checkpoint.RecordAttempt(pr.source, pr.expanded, technique, false); err != nil {
+		if err := e.checkpoint.RecordAttempt(pr.source, attempt, technique, false); err != nil {
 			return model.Finding{}, false, err
 		}
 
@@ -792,11 +793,44 @@ func (e *Engine) confirm(ctx context.Context, pr probe) (model.Finding, bool, er
 
 	f := e.finding(pr, pair, found, status)
 
-	if err := e.checkpoint.RecordHit(pr.source, pr.expanded, technique, f); err != nil {
+	if err := e.checkpoint.RecordHit(pr.source, attempt, technique, f); err != nil {
 		return model.Finding{}, false, err
 	}
 
 	return f, true, nil
+}
+
+// attemptKey identifies one attempt by the request it sends.
+//
+// The expanded payload does not identify it. One envelope that carries the
+// destination in two fields yields two probes with the same source, the same
+// expanded payload and the same technique, and keying on those three let the
+// first one's miss suppress the second one's hit. The request is what differs,
+// so the request is the key.
+func (pr probe) attemptKey() string {
+	if len(pr.extra) == 0 {
+		return pr.probed
+	}
+
+	names := make([]string, 0, len(pr.extra))
+	for name := range pr.extra {
+		names = append(names, name)
+	}
+
+	sort.Strings(names)
+
+	var b strings.Builder
+
+	b.WriteString(pr.probed)
+
+	for _, name := range names {
+		b.WriteString("\x00")
+		b.WriteString(name)
+		b.WriteString(": ")
+		b.WriteString(strings.Join(pr.extra.Values(name), ","))
+	}
+
+	return b.String()
 }
 
 // techniqueID prefers the envelope class the decoder identified over the
