@@ -412,3 +412,41 @@ func TestParseRefreshKeepsQuotesOwnedByTheValue(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "https://c.invalid/", quoted)
 }
+
+// TestParseRefreshWithoutTheURLPrefix is the regression for a form found on a
+// live target. The HTML standard makes "url=" optional, so "0;https://host/"
+// navigates exactly like "0;url=https://host/", and requiring the prefix
+// missed every application that emits the shorter one.
+func TestParseRefreshWithoutTheURLPrefix(t *testing.T) {
+	t.Parallel()
+
+	const dest = "https://c.invalid/"
+
+	tests := []struct {
+		name   string
+		header string
+	}{
+		{name: "semicolon with the prefix", header: "0;url=" + dest},
+		{name: "semicolon without it", header: "0;" + dest},
+		{name: "semicolon, space, no prefix", header: "0; " + dest},
+		{name: "comma with the prefix", header: "0,url=" + dest},
+		{name: "comma without it", header: "0," + dest},
+		{name: "quoted, uppercase prefix", header: "5;URL='" + dest + "'"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := resolve.ParseRefresh(tt.header)
+			require.True(t, ok)
+			assert.Equal(t, dest, got)
+		})
+	}
+
+	// A directive with no destination at all navigates nowhere.
+	for _, header := range []string{"", "5", "0"} {
+		_, ok := resolve.ParseRefresh(header)
+		assert.False(t, ok, "%q names no destination", header)
+	}
+}

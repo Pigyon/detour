@@ -358,7 +358,13 @@ func NeedsBrowserConfirm(base, canary string, pair Pair) bool {
 	return browserOff && !rfcOff
 }
 
-// ParseRefresh extracts the url= value from a Refresh response header.
+// ParseRefresh extracts the destination from a Refresh directive, in either
+// the header or a meta tag.
+//
+// The "url=" prefix is optional. The HTML standard skips it if present and
+// takes the rest of the value as the URL either way, so "0;https://host/"
+// navigates exactly like "0;url=https://host/". Requiring the prefix missed
+// the shorter form, which real applications emit.
 func ParseRefresh(header string) (string, bool) {
 	header = strings.TrimSpace(header)
 	if header == "" {
@@ -368,14 +374,19 @@ func ParseRefresh(header string) (string, bool) {
 	// The offset has to be taken on the string it indexes. strings.ToLower can
 	// change a string's byte length, so an index found in a lowercased copy
 	// does not point at the same place in the original.
-	idx := indexFold(header, "url=")
-	if idx < 0 {
+	var rest string
+
+	if idx := indexFold(header, "url="); idx >= 0 {
+		rest = header[idx+len("url="):]
+	} else if _, after, found := strings.Cut(header, ";"); found {
+		rest = after
+	} else if _, after, found := strings.Cut(header, ","); found {
+		rest = after
+	} else {
 		return "", false
 	}
 
-	rest := strings.TrimSpace(header[idx+len("url="):])
-	rest = trimMatchingQuotes(rest)
-
+	rest = trimMatchingQuotes(strings.TrimSpace(rest))
 	if rest == "" {
 		return "", false
 	}
