@@ -233,6 +233,35 @@ func TestUnansweredProbesAreNotRecordedAsMisses(t *testing.T) {
 		"a host that never answered must leave no verdict behind")
 }
 
+// TestStoppedRunKeepsWhatItProved is what Ctrl-C costs.
+//
+// Cancellation was treated as failure at three levels, so an interrupted scan
+// returned no findings, wrote no report, and exited non-zero. Stopping a long
+// run cost the whole run unless --resume happened to be set.
+func TestStoppedRunKeepsWhatItProved(t *testing.T) {
+	t.Parallel()
+
+	eng, srv := newEngine(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	// Long enough to prove something, short enough to stop mid-run.
+	go func() {
+		time.Sleep(700 * time.Millisecond)
+		cancel()
+	}()
+
+	findings, err := eng.Run(ctx, []string{
+		srv.URL + "/a01?url=https://allowed.lab/",
+		srv.URL + "/a07?url=https://allowed.lab/",
+		srv.URL + "/d06?url=https://allowed.lab/",
+	})
+
+	require.ErrorIs(t, err, context.Canceled, "a stopped run says it was stopped")
+	assert.NotEmpty(t, findings, "and still hands back what it proved")
+}
+
 func techniqueSet(findings []model.Finding) map[string]struct{} {
 	out := map[string]struct{}{}
 	for _, f := range findings {

@@ -430,9 +430,6 @@ func (e *Engine) Run(ctx context.Context, sources []string) ([]model.Finding, er
 		slog.Debug("attacking source", "url", raw)
 
 		hits, err := e.attackOne(ctx, raw)
-		if err != nil {
-			return err
-		}
 
 		for _, f := range hits {
 			slog.Debug("finding",
@@ -442,22 +439,35 @@ func (e *Engine) Run(ctx context.Context, sources []string) ([]model.Finding, er
 				"payload", f.Payload)
 		}
 
-		if len(hits) == 0 {
-			return nil
+		// A source keeps what it proved even when it did not finish. The
+		// alternative threw the whole source away over its last request.
+		if len(hits) > 0 {
+			mu.Lock()
+
+			findings = append(findings, hits...)
+			mu.Unlock()
 		}
 
-		mu.Lock()
-
-		findings = append(findings, hits...)
-		mu.Unlock()
-
-		return nil
+		return err
 	})
-	if err != nil {
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if err != nil && !stopped(err) {
 		return nil, err
 	}
 
-	return findings, nil
+	return findings, err
+}
+
+// stopped reports whether err is the run being stopped rather than failing.
+//
+// An interrupted scan is not a failed scan. Ctrl-C used to return no findings,
+// write no report, and exit non-zero, so stopping a forty-minute run cost the
+// whole forty minutes unless --resume happened to be set.
+func stopped(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func (e *Engine) attackOne(ctx context.Context, raw string) ([]model.Finding, error) {
@@ -506,11 +516,14 @@ func (e *Engine) attackOne(ctx context.Context, raw string) ([]model.Finding, er
 	// The client bounds what is actually on the wire, so fanning out here
 	// cannot exceed the operator's limit.
 	payloadHits, err := e.runPayloads(ctx, raw, parsed, redirector)
-	if err != nil {
-		return nil, err
-	}
 
 	hits = append(hits, payloadHits...)
+
+	// A stopped source hands back what it proved, so the stages below are
+	// skipped rather than the findings above being thrown away.
+	if err != nil {
+		return hits, err
+	}
 
 	// The chained class is what is left when the direct route is refused, so
 	// it runs last and only where nothing else got through.
@@ -594,7 +607,7 @@ func (e *Engine) runPayloads(
 
 		return nil
 	})
-	if err != nil {
+	if err != nil && !stopped(err) {
 		return nil, err
 	}
 
@@ -607,7 +620,7 @@ func (e *Engine) runPayloads(
 		return hits[i].Payload < hits[j].Payload
 	})
 
-	return hits, nil
+	return hits, err
 }
 
 func (e *Engine) attackKeyword(ctx context.Context, raw string) ([]model.Finding, error) {

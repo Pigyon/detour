@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -118,7 +119,7 @@ func runAttack(cmd *cobra.Command, source string, opts attackOptions) error {
 	defer closer()
 
 	findings, err := eng.Run(cmd.Context(), urls)
-	if err != nil {
+	if err != nil && !noteStopped(cmd, err) {
 		return err
 	}
 
@@ -144,6 +145,23 @@ func attachCheckpoint(eng *attack.Engine, resume string) (func(), error) {
 	eng.SetCheckpoint(store)
 
 	return func() { _ = store.Close() }, nil
+}
+
+// noteStopped reports whether err is the run being stopped rather than
+// failing, and says so on stderr.
+//
+// A stopped run still writes everything it proved. Returning the error
+// instead printed nothing, wrote no report, and exited non-zero, so Ctrl-C on
+// a long scan cost the whole scan unless --resume happened to be set.
+func noteStopped(cmd *cobra.Command, err error) bool {
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+
+	_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
+		"stopped early: reporting what was proved before the stop")
+
+	return true
 }
 
 // reportCoverage says what the run touched, so a count of zero can be read.

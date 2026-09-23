@@ -3,6 +3,7 @@ package pool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime/debug"
 
@@ -35,6 +36,13 @@ func Run[T any](ctx context.Context, concurrency int, items []T, fn func(context
 	}
 
 	if err := group.Wait(); err != nil {
+		// A stopped group is the caller stopping, not the pool failing, and
+		// pools nest: wrapping it at every level produced the unreadable
+		// "worker pool: worker pool: context canceled".
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+
 		return fmt.Errorf("worker pool: %w", err)
 	}
 
