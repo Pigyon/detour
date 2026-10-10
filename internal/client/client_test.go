@@ -388,3 +388,108 @@ func TestForbiddenSlowsWithoutRetrying(t *testing.T) {
 	assert.Equal(t, int64(1), attempts.Load(), "a 403 is terminal and must not be retried")
 	assert.Less(t, c.RateFor(host), before, "a 403 is still pushback")
 }
+
+// TestHostGivesUpAfterSustainedFloorPushback is the multi-hour-grind case: a
+// WAF that never stops refusing must not keep the run paying ten seconds a
+// request against it forever.
+func TestHostGivesUpAfterSustainedFloorPushback(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+
+	host := hostOf(t, srv.URL)
+	c := newTestClient(t, config.Config{Rate: 64}, host)
+
+	// ForceSlow drives the same state transition sustained pushback over a
+	// real run would, without blocking on the real rate.Limiter once the
+	// rate has collapsed: enough halvings to reach the floor, then enough
+	// floor-rate pushbacks to cross the give-up threshold.
+	for range 20 {
+		c.ForceSlow(host)
+	}
+
+	assert.InEpsilon(t, client.MinRate, c.RateFor(host), 1e-9, "sustained refusal must reach the floor")
+	assert.True(t, c.HasGivenUpOn(host), "a host still refusing at the floor must be given up on")
+}
+
+// TestGivingUpStopsSendingRequests proves the give-up is not just a label: a
+// given-up host must stop receiving traffic, which is the entire point.
+func TestGivingUpStopsSendingRequests(t *testing.T) {
+	t.Parallel()
+
+	var attempts atomic.Int64
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+
+	host := hostOf(t, srv.URL)
+	c := newTestClient(t, config.Config{Rate: 64}, host)
+
+	for range 20 {
+		c.ForceSlow(host)
+	}
+
+	require.True(t, c.HasGivenUpOn(host), "precondition: the host must have given up")
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
+	require.NoError(t, err)
+
+	resp, err := c.Do(context.Background(), req)
+	drain(resp, nil)
+
+	require.ErrorIs(t, err, client.ErrHostGivenUp, "a given-up host must fail fast with the sentinel error")
+	assert.Equal(t, int64(0), attempts.Load(), "a given-up host must receive no requests at all")
+}
+
+// TestHostRecoversAfterSuccess is the other half: a host that answers
+// normally again is not settled, and must not stay pinned at the floor.
+func TestHostRecoversAfterSuccess(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	host := hostOf(t, srv.URL)
+	c := newTestClient(t, config.Config{Rate: 64}, host)
+	base := c.RateFor(host)
+
+	for range 5 {
+		c.ForceSlow(host)
+	}
+
+	collapsed := c.RateFor(host)
+	require.Less(t, collapsed, base, "precondition: sustained refusal must have slowed the host")
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
+	require.NoError(t, err)
+
+	c.BackdateCooldowns(host, client.RecoverCooldown)
+	drain(c.Do(context.Background(), req))
+
+	assert.Greater(t, c.RateFor(host), collapsed, "a success must raise the rate back up")
+	assert.False(t, c.HasGivenUpOn(host), "a success must clear any pending give-up")
+}
+
+// TestRecoveryNeverExceedsTheConfiguredRate keeps recovery from overshooting
+// what the operator asked for in the first place.
+func TestRecoveryNeverExceedsTheConfiguredRate(t *testing.T) {
+	t.Parallel()
+
+	host := "recovery-ceiling.invalid"
+	c := newTestClient(t, config.Config{Rate: 8}, host)
+	base := c.RateFor(host)
+
+	for range 10 {
+		c.ForceRecover(host)
+	}
+
+	assert.InEpsilon(t, base, c.RateFor(host), 1e-9, "recovery must not exceed the configured rate")
+}
