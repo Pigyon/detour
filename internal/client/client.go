@@ -36,7 +36,33 @@ const (
 	// cut by time instead keeps the adaptation and bounds how fast it can
 	// collapse.
 	slowCooldown = 5 * time.Second
+
+	// maxFloorPushbacks is how many pushbacks a host gets once it is already
+	// at the rate floor before the client gives up on it entirely.
+	//
+	// The floor alone does not bound a run: a host that never stops saying no
+	// still costs ten seconds per request forever, and a target with hundreds
+	// of remaining URLs behind it turns a run into a multi-hour grind with
+	// nothing to show. A host that is still refusing after this many floor-rate
+	// attempts is settled, not slow, and the rest of its queue is better spent
+	// elsewhere.
+	maxFloorPushbacks = 5
+
+	// recoverCooldown is the shortest wall-clock gap between two rate
+	// restorations for one host. Longer than slowCooldown on purpose: a host
+	// recovers on the strength of a success, and flapping the rate on every
+	// other response would undo the pacing slow() exists for.
+	recoverCooldown = 30 * time.Second
 )
+
+// ErrHostGivenUp is returned when a host has been pushed back often enough,
+// at the rate floor, that the client stops sending it requests for the rest
+// of the run.
+//
+// Callers see this exactly like any other failed request: the attack engine
+// already treats a Do error as unanswered rather than a miss, so a given-up
+// host is skipped, not recorded as clean.
+var ErrHostGivenUp = errors.New("client: host gave up after sustained pushback at the rate floor")
 
 // Client issues scoped, credential-safe HTTP requests and never follows redirects.
 type Client struct {
@@ -132,16 +158,20 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 
 	applyCredentials(req, c.extra, c.cookies)
 
+	// The rate wait happens before the in-flight slot is taken, not after. A
+	// goroutine blocked on a collapsed host's limiter is not a request on the
+	// wire, and holding the slot across that wait let one bad host starve
+	// --concurrency for every other host in the same run.
+	if err := c.wait(ctx, host); err != nil {
+		return nil, err
+	}
+
 	release, err := c.acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	defer release()
-
-	if err := c.wait(ctx, host); err != nil {
-		return nil, err
-	}
 
 	return c.doWithRetry(ctx, req)
 }
@@ -161,7 +191,13 @@ func (c *Client) acquire(ctx context.Context) (func(), error) {
 }
 
 func (c *Client) wait(ctx context.Context, host string) error {
-	if err := c.limiterFor(host).limiter.Wait(ctx); err != nil {
+	limit := c.limiterFor(host)
+
+	if limit.hasGivenUp() {
+		return fmt.Errorf("%s: %w", host, ErrHostGivenUp)
+	}
+
+	if err := limit.limiter.Wait(ctx); err != nil {
 		return fmt.Errorf("rate limiter: %w", err)
 	}
 
@@ -180,18 +216,35 @@ func (c *Client) wait(ctx context.Context, host string) error {
 	}
 }
 
-// hostLimit is one host's pacing: its limiter, and when it was last slowed.
+// hostLimit is one host's pacing: its limiter, the rate it started at, and
+// when it was last moved.
 type hostLimit struct {
 	limiter *rate.Limiter
+	base    rate.Limit
 
-	mu       sync.Mutex
-	lastSlow time.Time
+	mu          sync.Mutex
+	lastSlow    time.Time
+	lastRecover time.Time
+	// floorPushbacks counts pushbacks received while already at the rate
+	// floor. A success anywhere above the floor resets it: the host only
+	// gives up for sustained refusal once nothing is left to slow down for.
+	floorPushbacks int
+	givenUp        bool
 }
 
-// slow halves the host's rate, at most once per slowCooldown.
+// slow halves the host's rate, at most once per slowCooldown, and gives up on
+// the host once it has refused this many times running at the floor.
 func (h *hostLimit) slow(now time.Time) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
+	if h.limiter.Limit() <= minRate {
+		h.floorPushbacks++
+
+		if h.floorPushbacks >= maxFloorPushbacks {
+			h.givenUp = true
+		}
+	}
 
 	if !h.lastSlow.IsZero() && now.Sub(h.lastSlow) < slowCooldown {
 		return
@@ -207,6 +260,42 @@ func (h *hostLimit) slow(now time.Time) {
 	h.limiter.SetLimit(next)
 }
 
+// recover raises the host's rate after a success, at most once per
+// recoverCooldown, and clears any pending give-up: an answer, even a slow
+// one, means the host is not settled after all.
+func (h *hostLimit) recover(now time.Time) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.floorPushbacks = 0
+	h.givenUp = false
+
+	if h.limiter.Limit() >= h.base {
+		return
+	}
+
+	if !h.lastRecover.IsZero() && now.Sub(h.lastRecover) < recoverCooldown {
+		return
+	}
+
+	h.lastRecover = now
+
+	next := h.limiter.Limit() * 2
+	if next > h.base {
+		next = h.base
+	}
+
+	h.limiter.SetLimit(next)
+}
+
+// hasGivenUp reports whether the host has been given up on.
+func (h *hostLimit) hasGivenUp() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	return h.givenUp
+}
+
 func (c *Client) limiterFor(host string) *hostLimit {
 	if got, ok := c.limiters.Load(host); ok {
 		limit, ok := got.(*hostLimit)
@@ -215,7 +304,7 @@ func (c *Client) limiterFor(host string) *hostLimit {
 		}
 	}
 
-	created := &hostLimit{limiter: rate.NewLimiter(c.rate, defaultBurst)}
+	created := &hostLimit{limiter: rate.NewLimiter(c.rate, defaultBurst), base: c.rate}
 	actual, _ := c.limiters.LoadOrStore(host, created)
 
 	limit, ok := actual.(*hostLimit)
@@ -273,10 +362,17 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request) (*http.Resp
 		// Once per request, not once per attempt. Halving the rate on every
 		// retry of the same request divides it by sixteen, which pins a host
 		// at the floor for the rest of the run over one bad moment.
-		if isPushback(resp.StatusCode) && !slowed {
-			slowed = true
+		if isPushback(resp.StatusCode) {
+			if !slowed {
+				slowed = true
 
-			c.slowHost(req.URL.Hostname())
+				c.slowHost(req.URL.Hostname())
+			}
+		} else {
+			// Any non-pushback answer, even one asking for a retry, means the
+			// host is not the one refusing traffic right now. A floor rate is
+			// only still earned by a host that keeps saying no.
+			c.recoverHost(req.URL.Hostname())
 		}
 
 		if !shouldRetry(resp.StatusCode) {
@@ -342,6 +438,10 @@ func (b *cancelBody) Close() error {
 
 func (c *Client) slowHost(host string) {
 	c.limiterFor(host).slow(time.Now())
+}
+
+func (c *Client) recoverHost(host string) {
+	c.limiterFor(host).recover(time.Now())
 }
 
 func shouldRetry(status int) bool {
