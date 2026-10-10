@@ -81,7 +81,17 @@ func runPipeline(cmd *cobra.Command, target string, flags *reconFlags, headless 
 	eng := attack.New(c, cfg.Destination(), flags.keyword, cfg.Concurrency, nil)
 	eng.SetTrustedHosts(allowed)
 
-	closer, err := attachCheckpoint(eng, flags.resume)
+	// A full pipeline run defaults to resumable rather than requiring the
+	// operator to know, before a run that might need interrupting, that they
+	// should have passed --resume. Two kills this project's own testing hit
+	// both lost every attempt made so far because the flag had not been set.
+	resume := flags.resume
+	if resume == "" {
+		resume = defaultResumePath(target, flags.outDir)
+		slog.Debug("resuming from checkpoint by default", "path", resume)
+	}
+
+	closer, err := attachCheckpoint(eng, resume)
 	if err != nil {
 		return err
 	}
@@ -396,6 +406,40 @@ func loadURLs(cmd *cobra.Command, source string) ([]string, error) {
 	}
 
 	return adapter.LoadBytes(raw, "stdin")
+}
+
+// defaultResumePath picks where an unresumed pipeline run's checkpoint lives.
+//
+// --out already names a directory the operator chose for this target, so the
+// checkpoint goes there and survives alongside the rest of the run's output.
+// Without --out there is nowhere stable to put it, so it falls back to the
+// OS temp directory under a name derived from the target: stable across
+// retries of the same target, distinct across different ones.
+func defaultResumePath(target, outDir string) string {
+	const resumeFile = "resume.ndjson"
+
+	if outDir != "" {
+		return filepath.Join(outDir, resumeFile)
+	}
+
+	return filepath.Join(os.TempDir(), "detour-resume-"+slugify(target)+".ndjson")
+}
+
+// slugify turns a target into a filesystem-safe fragment. It only has to be
+// stable and distinct, not reversible.
+func slugify(s string) string {
+	var b strings.Builder
+
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+
+	return b.String()
 }
 
 func scopedClient(cfg config.Config) (*client.Client, error) {

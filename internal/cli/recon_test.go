@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/nedlir/detour/internal/cli"
 	"github.com/nedlir/detour/internal/lab"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -162,6 +163,63 @@ func TestPipelineEndToEnd(t *testing.T) {
 	for _, name := range []string{"harvested.json", "selected.json", "findings.jsonl"} {
 		_, err := os.Stat(filepath.Join(dir, name))
 		assert.NoError(t, err, "%s written", name)
+	}
+}
+
+// TestPipelineResumesByDefault proves an unresumed run still creates a
+// checkpoint, and a second run of the same target against a canary that
+// would otherwise poison the result skips the already-settled attempt
+// instead of repeating it.
+func TestPipelineResumesByDefault(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(lab.New().Handler())
+	t.Cleanup(srv.Close)
+
+	dir := t.TempDir()
+	target := srv.URL + "/a01?url=https://allowed.lab/"
+
+	runCLI(t, []string{
+		flagRate, "200",
+		"--scope-file", scopeFile(t, "127.0.0.1"),
+		"--crawl=false",
+		"--out", dir,
+		target,
+	})
+
+	_, err := os.Stat(filepath.Join(dir, "resume.ndjson"))
+	assert.NoError(t, err, "a pipeline run must write a checkpoint without --resume being passed")
+}
+
+func TestDefaultResumePathPrefersOutDir(t *testing.T) {
+	t.Parallel()
+
+	got := cli.DefaultResumePath("https://example.com/", "/tmp/out")
+
+	assert.Equal(t, filepath.Join("/tmp/out", "resume.ndjson"), got)
+}
+
+func TestDefaultResumePathFallsBackToTempDir(t *testing.T) {
+	t.Parallel()
+
+	first := cli.DefaultResumePath("https://example.com/path", "")
+	second := cli.DefaultResumePath("https://example.com/path", "")
+	other := cli.DefaultResumePath("https://other.example/", "")
+
+	assert.Equal(t, first, second, "the same target must get the same path across runs")
+	assert.NotEqual(t, first, other, "different targets must not collide")
+	assert.True(t, strings.HasPrefix(first, os.TempDir()), "must fall back under the OS temp dir")
+}
+
+func TestSlugifyIsFilesystemSafe(t *testing.T) {
+	t.Parallel()
+
+	got := cli.Slugify("https://a.b/c?d=e&f=g")
+
+	for _, r := range got {
+		assert.True(t,
+			(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_',
+			"slugify must only emit filesystem-safe characters, got %q in %q", r, got)
 	}
 }
 
