@@ -22,6 +22,7 @@ func TestUnmarshalDefaults(t *testing.T) {
 	assert.Equal(t, 10, cfg.Concurrency)
 	assert.InDelta(t, 5.0, cfg.Rate, 0.001)
 	assert.Equal(t, 10*time.Second, cfg.Timeout)
+	assert.Equal(t, time.Duration(0), cfg.Budget, "no budget by default means unlimited")
 	require.NotNil(t, cfg.Headers)
 	assert.Empty(t, cfg.Headers)
 }

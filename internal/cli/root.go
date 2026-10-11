@@ -26,7 +26,10 @@ func NewRoot() *cobra.Command {
 
 	pipeline := &reconFlags{}
 
-	var pipelineHeadless bool
+	var (
+		pipelineHeadless bool
+		cancelBudget     context.CancelFunc
+	)
 
 	root := &cobra.Command{
 		Use:   "detour [target]",
@@ -64,8 +67,26 @@ func NewRoot() *cobra.Command {
 
 			setupLogger(cfg.LogLevel, cmd.ErrOrStderr())
 			ctx := config.WithConfig(cmd.Context(), cfg)
+
+			// A budget expiring is handed to the run exactly like Ctrl-C: the
+			// context is cancelled, and every stage that already checks
+			// ctx.Err() stops and reports what it proved rather than losing
+			// the whole scan. The cancel func is released in
+			// PersistentPostRunE, after RunE has had the whole run to use it.
+			if cfg.Budget > 0 {
+				//nolint:gosec // G118: cancelBudget is called in PersistentPostRunE, not discarded
+				ctx, cancelBudget = context.WithTimeout(ctx, cfg.Budget)
+			}
+
 			cmd.SetContext(ctx)
 			cmd.Root().SetContext(ctx)
+
+			return nil
+		},
+		PersistentPostRunE: func(_ *cobra.Command, _ []string) error {
+			if cancelBudget != nil {
+				cancelBudget()
+			}
 
 			return nil
 		},
@@ -112,6 +133,8 @@ func registerPersistentFlags(root *cobra.Command) {
 	fs.Int("concurrency", 10, "max concurrent in-flight requests")
 	fs.Duration("delay", 0, "additional delay between per-host requests")
 	fs.Duration("timeout", 10*time.Second, "per-request timeout")
+	fs.Duration("budget", 0,
+		"stop the whole run after this long and report what was proved so far (0 means unlimited)")
 }
 
 func bindFlags(v *viper.Viper, cmd *cobra.Command) error {
