@@ -294,3 +294,38 @@ func TestAltCanary(t *testing.T) {
 	assert.Equal(t, "detour-alt.invalid", attack.AltCanary("canary.invalid"))
 	assert.Equal(t, "detour-alt2.invalid", attack.AltCanary("detour-alt.invalid"))
 }
+
+// TestCoverageRecordsRedirectorURLs proves an endpoint that already answers
+// with a destination is named, not just counted, so --deep or a manual
+// follow-up has something to target instead of a number that was already
+// true a run ago.
+func TestCoverageRecordsRedirectorURLs(t *testing.T) {
+	t.Parallel()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", "https://allowed.lab/")
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(redirector.Close)
+
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(plain.Close)
+
+	cfg := config.Config{Canary: testCanary, Rate: 100, Concurrency: 4, Timeout: 3 * time.Second}
+	guard := scope.New(cfg.Canary)
+	c, err := client.New(cfg, guard)
+	require.NoError(t, err)
+
+	eng := attack.New(c, cfg.Canary, "", cfg.Concurrency, nil)
+
+	_, err = eng.Run(context.Background(), []string{redirector.URL + "/", plain.URL + "/"})
+	require.NoError(t, err)
+
+	cov := eng.Coverage()
+
+	assert.Equal(t, 1, cov.Redirectors)
+	require.Len(t, cov.RedirectorURLs, 1)
+	assert.Equal(t, redirector.URL+"/", cov.RedirectorURLs[0])
+}
