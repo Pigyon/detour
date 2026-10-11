@@ -120,7 +120,13 @@ func WriteVersion(dir string, findings []model.Finding, version string) error {
 		return err
 	}
 
-	if err := writeFindingReports(filepath.Join(dir, dirFindings), unique); err != nil {
+	findingsDir := filepath.Join(dir, dirFindings)
+
+	if err := writeFindingReports(findingsDir, unique); err != nil {
+		return err
+	}
+
+	if err := writeManifestAndMarkStale(findingsDir, unique); err != nil {
 		return err
 	}
 
