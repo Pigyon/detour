@@ -15,6 +15,7 @@ func registerInfrastructure(mux *http.ServeMux) {
 	mux.HandleFunc("GET /_next/d02", handleD02)
 	mux.HandleFunc("GET /saml/acs", handleSAML)
 	mux.HandleFunc("GET /oidc/logout", handleOIDCLogout)
+	mux.HandleFunc("GET /adfs/ls", handleWSFed)
 	mux.HandleFunc("GET /d05", handleD05)
 	mux.HandleFunc("GET /d06", handleD06)
 }
@@ -71,6 +72,10 @@ func handleSAML(w http.ResponseWriter, r *http.Request) {
 
 func handleOIDCLogout(w http.ResponseWriter, r *http.Request) {
 	redirectIf(w, r.URL.Query().Get("post_logout_redirect_uri"), nonempty)
+}
+
+func handleWSFed(w http.ResponseWriter, r *http.Request) {
+	redirectIf(w, r.URL.Query().Get("wreply"), nonempty)
 }
 
 func handleD05(w http.ResponseWriter, r *http.Request) {

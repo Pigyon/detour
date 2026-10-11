@@ -85,8 +85,13 @@ var hostParams = map[string]struct{}{
 // A SAML RelayState that redirects is OR-D04 whichever string beat the
 // validator, because the technique is the parameter's role in the protocol.
 // Labelling it after the payload loses the only detail a triager needs.
+//
+// wreply is WS-Federation's equivalent of RelayState: a free-text
+// post-authentication destination ADFS and Azure AD-style SSO carries
+// instead of SAML's parameter. Same role, same technique.
 var paramTechniques = map[string]string{
 	"relaystate": "OR-D04",
+	"wreply":     "OR-D04",
 }
 
 // techniqueForParam returns the id a parameter's role implies, if any.

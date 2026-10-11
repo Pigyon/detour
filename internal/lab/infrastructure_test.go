@@ -50,6 +50,14 @@ func TestInfrastructureShapes(t *testing.T) {
 		assert.Equal(t, attacker, res.Header.Get("Location"))
 	})
 
+	t.Run("OR-D04 ws-federation wreply", func(t *testing.T) {
+		t.Parallel()
+
+		res := doGet(t, client, srv.URL+"/adfs/ls?wreply="+url.QueryEscape(attacker))
+		require.Equal(t, http.StatusFound, res.Status)
+		assert.Equal(t, attacker, res.Header.Get("Location"))
+	})
+
 	t.Run("OR-D05 referer", func(t *testing.T) {
 		t.Parallel()
 

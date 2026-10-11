@@ -33,7 +33,7 @@ var redirectParams = map[string]struct{}{
 	"back": {}, "backurl": {}, "back_url": {}, "dest": {}, "destination": {},
 	"goto": {}, "continue": {}, "rurl": {}, "redir": {}, "r": {}, "u": {},
 	"uri": {}, "target": {}, "to": {}, "out": {}, "forward": {}, "link": {},
-	"callback": {}, "relaystate": {}, "checkout_url": {}, "image_url": {},
+	"callback": {}, "relaystate": {}, "wreply": {}, "wctx": {}, "whr": {}, "checkout_url": {}, "image_url": {},
 	"go": {}, "login_url": {}, "logout_url": {}, "post_logout_redirect_uri": {},
 	"service": {}, "ref": {}, "referrer": {}, "domain": {}, "host": {},
 	"desthost": {}, "dest_host": {}, "hostname": {},

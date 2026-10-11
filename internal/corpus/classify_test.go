@@ -34,6 +34,13 @@ func TestClassify(t *testing.T) {
 			keep:       true,
 		},
 		{
+			name:       "ws-federation wreply is redirect shaped",
+			input:      "https://a.lab/adfs/ls?wreply=/account",
+			wantKinds:  []corpus.Kind{corpus.KindParamName},
+			wantParams: []string{"wreply"},
+			keep:       true,
+		},
+		{
 			name:       "value that is already a url",
 			input:      "https://a.lab/page?image=https://cdn.a.lab/x.png",
 			wantKinds:  []corpus.Kind{corpus.KindParamValue},

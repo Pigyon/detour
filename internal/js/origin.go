@@ -36,7 +36,7 @@ var redirectParams = map[string]struct{}{
 	"returnurl": {}, "return_to": {}, "back": {}, "backurl": {}, "dest": {},
 	"destination": {}, "goto": {}, "continue": {}, "rurl": {}, "redir": {},
 	"uri": {}, "target": {}, "to": {}, "out": {}, "forward": {}, "link": {},
-	"callback": {}, "relaystate": {},
+	"callback": {}, "relaystate": {}, "wreply": {},
 }
 
 // originOf traces a sink expression back to the source that feeds it.

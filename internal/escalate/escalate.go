@@ -33,12 +33,18 @@ var logoutPaths = []string{
 // samlPaths are assertion consumer endpoints, where RelayState is free text.
 var samlPaths = []string{"/saml", "/saml2", "/sso/saml", "/acs", "/saml/acs"}
 
+// wsFedPaths are WS-Federation's sign-in endpoints: ADFS and Azure AD's
+// equivalent of a SAML assertion consumer, where wreply is the same kind of
+// free-text destination RelayState is.
+var wsFedPaths = []string{"/adfs/ls", "/wsfed", "/federation", "/_trust/default.aspx"}
+
 // Parameter names that carry each chain's destination.
 const (
 	paramRedirectURI    = "redirect_uri"
 	paramPostLogout     = "post_logout_redirect_uri"
 	paramRelayState     = "relaystate"
 	paramSAMLRelayState = "SAMLRelayState"
+	paramWReply         = "wreply"
 )
 
 // Analyze returns f with its escalation capabilities filled in.
@@ -87,6 +93,11 @@ func applyPosition(caps model.CapabilitySet, parsed *url.URL, param string) mode
 		sits(path, logoutPaths, lowerParam, query, paramPostLogout, paramPostLogout)
 	caps.SAMLRelayState = caps.SAMLRelayState ||
 		sits(path, samlPaths, lowerParam, query, paramRelayState, paramSAMLRelayState)
+	// WS-Federation's wreply carries the same free-text destination RelayState
+	// does. OR-D04 covers SSO generically, not SAML alone, so it shares the
+	// capability rather than earning a field of its own.
+	caps.SAMLRelayState = caps.SAMLRelayState ||
+		sits(path, wsFedPaths, lowerParam, query, paramWReply, paramWReply)
 	caps.PhishingVector = caps.PhishingVector || matchesAny(path, authPaths)
 
 	return caps
