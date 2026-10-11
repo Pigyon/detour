@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/nedlir/detour/internal/adapter"
@@ -173,6 +174,10 @@ func reportCoverage(cmd *cobra.Command, c attack.Coverage) {
 	_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
 		"covered: %d of %d urls answered, %d already redirect, %d parameters probed\n",
 		c.Reachable, c.Sources, c.Redirectors, c.Params)
+
+	for _, u := range c.RedirectorURLs {
+		slog.Debug("already redirects", "url", u)
+	}
 }
 
 func writeAttackOutput(cmd *cobra.Command, findings []model.Finding, allow map[string]struct{}, outDir string) error {

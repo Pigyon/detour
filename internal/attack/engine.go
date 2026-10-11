@@ -285,6 +285,13 @@ type Coverage struct {
 	Redirectors int
 	// Params is how many distinct parameters were probed.
 	Params int
+	// RedirectorURLs names the sources Redirectors counted.
+	//
+	// An endpoint that already redirects is the best lead --deep has: it is
+	// a confirmed redirector, not a hypothetical one, and worth brute-forcing
+	// parameters on before anything else in the harvest. A bare count threw
+	// that away the moment the run finished.
+	RedirectorURLs []string
 }
 
 // Engine probes candidates with the built-in payload set.
@@ -339,7 +346,7 @@ func (e *Engine) Coverage() Coverage {
 	return e.coverage
 }
 
-func (e *Engine) noteCoverage(reachable, redirector bool, params int) {
+func (e *Engine) noteCoverage(reachable, redirector bool, params int, source string) {
 	e.coverageMu.Lock()
 	defer e.coverageMu.Unlock()
 
@@ -351,6 +358,7 @@ func (e *Engine) noteCoverage(reachable, redirector bool, params int) {
 
 	if redirector {
 		e.coverage.Redirectors++
+		e.coverage.RedirectorURLs = append(e.coverage.RedirectorURLs, source)
 	}
 
 	e.coverage.Params += params
@@ -494,12 +502,12 @@ func (e *Engine) attackOne(ctx context.Context, raw string) ([]model.Finding, er
 	redirector, reachable := e.baseline(ctx, raw)
 	if !reachable {
 		slog.Debug("source did not answer, skipping its payloads", "url", raw)
-		e.noteCoverage(false, false, 0)
+		e.noteCoverage(false, false, 0, raw)
 
 		return nil, nil
 	}
 
-	e.noteCoverage(true, redirector, len(targetParamsOn(parsed.Query(), redirector)))
+	e.noteCoverage(true, redirector, len(targetParamsOn(parsed.Query(), redirector)), raw)
 
 	hits, err := e.attackBlobs(ctx, raw)
 	if err != nil {
