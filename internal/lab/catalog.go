@@ -83,6 +83,7 @@ var catalog = []Endpoint{
 	{ID: "OR-D03", Path: "/d03/{path...}", Probe: "/d03/", Kind: KindVuln, Description: "Location built from the raw path, not path.Clean"},
 	{ID: "OR-D04", Path: "/saml/acs", Probe: "/saml/acs", Param: "RelayState", Kind: KindVuln, Description: "SAML RelayState free-text redirect"},
 	{Path: "/oidc/logout", Probe: "/oidc/logout", Param: "post_logout_redirect_uri", Kind: KindVuln, Description: "OIDC post_logout_redirect_uri unvalidated"},
+	{Path: "/adfs/ls", Probe: "/adfs/ls", Param: "wreply", Kind: KindVuln, Description: "WS-Federation wreply free-text redirect"},
 	{ID: "OR-D05", Path: "/d05", Probe: "/d05", Kind: KindVuln, Description: "Referer header used as the destination"},
 	{ID: "OR-D06", Path: "/d06", Probe: "/d06", Param: paramURL, Kind: KindVuln, Description: "Refresh response header, 200 no Location"},
 	{ID: "OR-E01", Path: "/e01", Probe: "/e01", Param: paramURL, Kind: KindVuln, Description: "JS sink with no javascript: scheme check"},

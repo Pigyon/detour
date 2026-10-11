@@ -46,6 +46,11 @@ func TestAnalyzeChains(t *testing.T) {
 			want: func(c model.CapabilitySet) bool { return c.SAMLRelayState },
 		},
 		{
+			name: "ws-federation wreply",
+			in:   finding("OR-D04", "https://a.lab/adfs/ls", "wreply", "https://c/"),
+			want: func(c model.CapabilitySet) bool { return c.SAMLRelayState },
+		},
+		{
 			name: "javascript scheme",
 			in:   finding("OR-E01", "https://a.lab/go", "url", "javascript:alert(1)"),
 			want: func(c model.CapabilitySet) bool { return c.JavaScriptScheme },

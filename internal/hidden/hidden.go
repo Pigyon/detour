@@ -30,6 +30,7 @@ var Names = []string{
 	"checkout_url", "image_url", "service", "ref", "site", "page", "path",
 	"file", "view", "load", "window", "data", "domain", "host", "html",
 	"login_url", "logout_url", "post_logout_redirect_uri", "RelayState",
+	"wreply", "wctx", "whr",
 }
 
 // Doer issues a request.

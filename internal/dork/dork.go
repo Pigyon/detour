@@ -36,7 +36,7 @@ var paramNames = []string{
 	"redirect", "redirect_uri", "url", "next", "return", "returnUrl",
 	"return_to", "back", "backUrl", "dest", "destination", "goto",
 	"continue", "r", "u", "target", "link", "out", "forward",
-	"callback", "RelayState", "post_logout_redirect_uri",
+	"callback", "RelayState", "wreply", "post_logout_redirect_uri",
 }
 
 // vendorPaths are click-wrapper formats. Finding one of these on a target's
