@@ -13,9 +13,10 @@ import (
 )
 
 const (
-	mechHeader = "header"
-	techA01    = "OR-A01"
-	statusLine = "status 302"
+	mechHeader    = "header"
+	techA01       = "OR-A01"
+	statusLine    = "status 302"
+	canaryPayload = "https://canary.invalid"
 )
 
 func TestParseFilter(t *testing.T) {
@@ -90,7 +91,7 @@ func TestWrite(t *testing.T) {
 	f := model.NewFinding()
 	f.TechniqueID = techA01
 	f.Mechanism = mechQuery
-	f.Payload = "https://canary.invalid"
+	f.Payload = canaryPayload
 	f.Repro = "curl -sI https://app.example/a"
 	f.Candidate.SourceURL = "https://app.example/a?url=https://allowed.lab/"
 	f.Capabilities.RedirectExternal = true
@@ -124,6 +125,66 @@ func TestWrite(t *testing.T) {
 	assert.Contains(t, single, "## Remediation")
 	assert.Contains(t, single, techA01)
 	assert.NotContains(t, single, "\u2014")
+}
+
+// TestWriteManifestListsCurrentFindings proves the manifest names this run's
+// finding directories, so a later run can tell what it is still reproducing
+// without re-deriving fingerprints itself.
+func TestWriteManifestListsCurrentFindings(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	f := model.NewFinding()
+	f.TechniqueID = techA01
+	f.Mechanism = mechQuery
+	f.Payload = canaryPayload
+	f.Candidate.SourceURL = "https://app.example/a?url=https://allowed.lab/"
+	f.Capabilities.InputControlled = true
+	f.Evidence = []string{statusLine}
+
+	require.NoError(t, report.Write(dir, []model.Finding{f}))
+
+	manifest := readOut(t, dir, filepath.Join("findings", "MANIFEST.json"))
+	assert.Contains(t, manifest, techA01)
+	assert.Contains(t, manifest, report.Fingerprint(f))
+}
+
+// TestWriteMarksDirectoriesStaleWhenNotReproduced proves a rerun that no
+// longer finds something flags the old directory rather than deleting or
+// silently ignoring it.
+func TestWriteMarksDirectoriesStaleWhenNotReproduced(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	first := model.NewFinding()
+	first.TechniqueID = techA01
+	first.Mechanism = mechQuery
+	first.Payload = canaryPayload
+	first.Candidate.SourceURL = "https://app.example/a?url=https://allowed.lab/"
+	first.Capabilities.InputControlled = true
+	first.Evidence = []string{statusLine}
+
+	require.NoError(t, report.Write(dir, []model.Finding{first}))
+
+	firstDir := "OR-A01-" + report.Fingerprint(first)[:8]
+	_, err := os.Stat(filepath.Join(dir, "findings", firstDir, "STALE.md"))
+	require.Error(t, err, "a finding still being reproduced must not be marked stale")
+
+	second := model.NewFinding()
+	second.TechniqueID = "OR-A02"
+	second.Mechanism = mechQuery
+	second.Payload = canaryPayload
+	second.Candidate.SourceURL = "https://app.example/b?url=https://allowed.lab/"
+	second.Capabilities.InputControlled = true
+	second.Evidence = []string{statusLine}
+
+	require.NoError(t, report.Write(dir, []model.Finding{second}))
+
+	stale := readOut(t, dir, filepath.Join("findings", firstDir, "STALE.md"))
+	assert.Contains(t, stale, "not reproduced")
+
+	report2 := readOut(t, dir, filepath.Join("findings", "OR-A01-"+report.Fingerprint(first)[:8], "REPORT.md"))
+	assert.Contains(t, report2, techA01, "the original report must still be there, not deleted")
 }
 
 func readOut(t *testing.T, dir, name string) string {
