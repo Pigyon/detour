@@ -24,6 +24,12 @@ func Render(f model.Finding) string {
 
 	fmt.Fprintf(&b, "**Delivered via:** %s\n\n", mechanismLine(f.Mechanism))
 
+	if f.Severity != nil {
+		fmt.Fprintf(&b, "**Suggested severity:** %s (%.1f, `%s`) - a suggestion from capabilities, "+
+			"not an assertion; the program's own rubric decides what this is actually worth.\n\n",
+			strings.ToUpper(f.Severity.Rating), f.Severity.Score, f.Severity.Vector)
+	}
+
 	writeProof(&b, f)
 	writeEnvelope(&b, f)
 	writeExplanation(&b, f)

@@ -182,6 +182,7 @@ func reportCoverage(cmd *cobra.Command, c attack.Coverage) {
 
 func writeAttackOutput(cmd *cobra.Command, findings []model.Finding, allow map[string]struct{}, outDir string) error {
 	findings = report.Apply(findings, allow)
+	findings = suggestSeverities(findings)
 
 	// Findings reach stdout before the report is written, so a directory that
 	// turns out to be unwritable costs the report and not the results.
@@ -201,4 +202,17 @@ func writeAttackOutput(cmd *cobra.Command, findings []model.Finding, allow map[s
 	}
 
 	return report.WriteVersion(outDir, findings, version)
+}
+
+// suggestSeverities fills in every finding's suggested CVSS score. It runs
+// regardless of --escalate: a finding without escalation capabilities still
+// gets the bare-redirect baseline, which is better triage information than
+// no severity at all, and one with them gets whatever they raise it to.
+func suggestSeverities(findings []model.Finding) []model.Finding {
+	for i := range findings {
+		severity := report.SuggestSeverity(findings[i].Capabilities)
+		findings[i].Severity = &severity
+	}
+
+	return findings
 }

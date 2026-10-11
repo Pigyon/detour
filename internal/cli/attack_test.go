@@ -37,6 +37,7 @@ func TestAttackCommandJSONL(t *testing.T) {
 	require.NoError(t, cmd.Execute())
 	assert.Contains(t, out.String(), `"technique_id"`)
 	assert.Contains(t, errOut.String(), "findings")
+	assert.Contains(t, out.String(), `"severity"`, "every finding must carry a suggested severity")
 }
 
 func TestAttackCommandHAR(t *testing.T) {

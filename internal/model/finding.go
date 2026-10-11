@@ -40,6 +40,15 @@ func (v *Validator) Clone() *Validator {
 	return &out
 }
 
+// Severity is a suggested CVSS 3.1 score, derived from a finding's
+// capabilities. It is a suggestion, not an assertion: the program's own
+// rubric is the one that decides what a submission is actually worth.
+type Severity struct {
+	Vector string  `json:"vector"`
+	Score  float64 `json:"score"`
+	Rating string  `json:"rating"`
+}
+
 // Finding is a capability-scored result. CVSS is derived later, not stored here.
 type Finding struct {
 	SchemaVersion string              `json:"schema_version"`
@@ -60,6 +69,10 @@ type Finding struct {
 	// leaving them in a directory nothing references.
 	Artifacts []string `json:"artifacts,omitempty"`
 	Verdict   string   `json:"verdict,omitempty"`
+	// Severity is filled in by report.SuggestSeverity. Omitted when nothing
+	// has computed it yet, so a finding that never reached that stage does
+	// not carry a zero-value score that could be mistaken for a real one.
+	Severity *Severity `json:"severity,omitempty"`
 }
 
 // NewFinding returns a finding with schema version set and slices initialized.
