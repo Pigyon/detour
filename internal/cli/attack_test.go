@@ -2,10 +2,14 @@ package cli_test
 
 import (
 	"bytes"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/nedlir/detour/internal/cli"
 	"github.com/nedlir/detour/internal/lab"
@@ -117,6 +121,48 @@ func TestAttackCommandResume(t *testing.T) {
 	first := run()
 	assert.NotEqual(t, "0 findings\n", first)
 	assert.Equal(t, first, run())
+}
+
+// TestAttackCommandRespectsBudget proves --budget stops a run before it
+// would otherwise finish, and still exits clean rather than erroring.
+func TestAttackCommandRespectsBudget(t *testing.T) {
+	t.Parallel()
+
+	const perRequestDelay = 150 * time.Millisecond
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(perRequestDelay)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	urls := make([]string, 20)
+	for i := range urls {
+		urls[i] = fmt.Sprintf("%s/?url=https://allowed.lab/%d", srv.URL, i)
+	}
+
+	list := filepath.Join(t.TempDir(), "urls.txt")
+	require.NoError(t, os.WriteFile(list, []byte(strings.Join(urls, "\n")+"\n"), 0o600))
+
+	start := time.Now()
+
+	cmd := cli.NewRoot()
+	out := new(bytes.Buffer)
+	errOut := new(bytes.Buffer)
+
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+	cmd.SetArgs(append([]string{"--budget", "300ms"}, attackArgs(list)...))
+
+	require.NoError(t, cmd.Execute(), "a budget running out must not be reported as a failure")
+
+	elapsed := time.Since(start)
+	allRequestsWouldHaveTaken := perRequestDelay * time.Duration(len(urls))
+
+	assert.Less(t, elapsed, allRequestsWouldHaveTaken,
+		"the budget must cut the run short rather than letting every request run")
+	assert.Contains(t, errOut.String(), "stopped early",
+		"a run cut short by its budget must say so, the same as Ctrl-C")
 }
 
 func attackArgs(extra ...string) []string {

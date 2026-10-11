@@ -50,6 +50,15 @@ type Config struct {
 	Concurrency int           `mapstructure:"concurrency"`
 	Delay       time.Duration `mapstructure:"delay"`
 	Timeout     time.Duration `mapstructure:"timeout"`
+	// Budget bounds the whole run's wall-clock time. Zero means unlimited.
+	//
+	// --timeout bounds one request and --rate paces one host, but nothing
+	// bounded the run itself: a target that throttles hard enough, or a
+	// --deep pass over a large harvest, could still grind for hours with
+	// every individual request behaving exactly as configured. A budget
+	// that expires is treated the same as Ctrl-C: the run stops and reports
+	// what it already proved, rather than losing the whole scan.
+	Budget time.Duration `mapstructure:"budget"`
 }
 
 // NewViper returns an isolated viper with defaults, env prefix, and key replacer.
@@ -72,6 +81,7 @@ func SetDefaults(v *viper.Viper) {
 	v.SetDefault("concurrency", defaultConcurrency)
 	v.SetDefault("timeout", defaultTimeout)
 	v.SetDefault("delay", time.Duration(0))
+	v.SetDefault("budget", time.Duration(0))
 }
 
 // LoadFile reads an optional YAML config. A missing file is not an error.
