@@ -1,6 +1,9 @@
 package client
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // Exported for tests only: the real constants backing the adaptive rate
 // limiter's pacing, so an external test can assert against them instead of
@@ -61,21 +64,36 @@ func (c *Client) ForceRecover(host string) {
 	h.recover(time.Now())
 }
 
-// ReloadCookies re-reads the cookies file into the live set, exposed so a
-// test can drive a refresh without waiting on the background ticker.
-func (c *Client) ReloadCookies() error {
-	return c.reloadCookies()
+// ReloadCredentials re-reads the cookies and headers files into the live set,
+// exposed so a test can drive a refresh without waiting on the background
+// ticker.
+func (c *Client) ReloadCredentials() error {
+	return c.reloadCredentials()
+}
+
+// RefreshCreds runs the refresh command and reloads, exposed so a test can
+// drive the self-driving refresh path directly.
+func (c *Client) RefreshCreds(ctx context.Context) {
+	c.refreshCreds(ctx)
 }
 
 // LiveCookieNames reports the names of the cookies the client would replay
 // right now, so a test can see whether a refresh took effect.
 func (c *Client) LiveCookieNames() []string {
-	snap := c.creds.snapshot()
-	names := make([]string, 0, len(snap))
+	_, cookies := c.creds.snapshot()
+	names := make([]string, 0, len(cookies))
 
-	for _, ck := range snap {
+	for _, ck := range cookies {
 		names = append(names, ck.Name)
 	}
 
 	return names
+}
+
+// LiveHeader reports the first value of a header the client would send right
+// now, so a test can see a header refresh took effect.
+func (c *Client) LiveHeader(name string) string {
+	headers, _ := c.creds.snapshot()
+
+	return headers.Get(name)
 }

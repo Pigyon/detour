@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os/exec"
 	"sync"
 	"time"
 )
@@ -21,47 +22,122 @@ const maxAuthCheckBody = 1 << 20
 // not valid, either before the run starts or after it has begun.
 var ErrSessionExpired = errors.New("client: authenticated session is not valid")
 
-// credentials holds the cookie set the client replays. A background refresh
-// can swap the whole set while requests are in flight, so reads take a
-// snapshot under a read lock and writes replace the slice rather than mutate
-// it in place.
+// credentials holds the headers and cookies the client replays. A background
+// refresh can swap the whole set while requests are in flight, so reads take a
+// snapshot under a read lock and writes replace the maps and slices rather
+// than mutate them in place.
 type credentials struct {
 	mu      sync.RWMutex
+	headers http.Header
 	cookies []*http.Cookie
 }
 
-func (s *credentials) snapshot() []*http.Cookie {
+func (s *credentials) snapshot() (http.Header, []*http.Cookie) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	return s.cookies
+	return s.headers, s.cookies
 }
 
-func (s *credentials) set(cookies []*http.Cookie) {
+func (s *credentials) set(headers http.Header, cookies []*http.Cookie) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.headers = headers
 	s.cookies = cookies
 }
 
-// reloadCookies re-reads the cookies file and swaps in the fresh set, keeping
-// the inline --cookie values. A short-lived session (a five-minute bearer, a
-// rotating bot-defense cookie) stays valid across a long run when the file is
-// rewritten out of band, for example by re-exporting a live browser session.
-func (c *Client) reloadCookies() error {
+// reloadCredentials re-reads the cookies and headers files and swaps in the
+// fresh set, keeping the inline --cookie and --header values. A short-lived
+// session (a five-minute bearer in a header, a rotating bot-defense cookie)
+// stays valid across a long run when the files are rewritten out of band, for
+// example by re-exporting a live browser session.
+func (c *Client) reloadCredentials() error {
+	cookies, err := c.reloadCookieFile()
+	if err != nil {
+		return err
+	}
+
+	headers, err := c.reloadHeaderFile()
+	if err != nil {
+		return err
+	}
+
+	c.creds.set(headers, cookies)
+
+	return nil
+}
+
+func (c *Client) reloadCookieFile() ([]*http.Cookie, error) {
 	if c.cookiesFile == "" {
-		return nil
+		return c.inline, nil
 	}
 
 	fromFile, err := parseNetscapeFile(c.cookiesFile)
 	if err != nil {
-		return fmt.Errorf("reloading cookies: %w", err)
+		return nil, fmt.Errorf("reloading cookies: %w", err)
 	}
 
 	refreshed := make([]*http.Cookie, 0, len(c.inline)+len(fromFile))
 	refreshed = append(refreshed, c.inline...)
 	refreshed = append(refreshed, fromFile...)
-	c.creds.set(refreshed)
+
+	return refreshed, nil
+}
+
+func (c *Client) reloadHeaderFile() (http.Header, error) {
+	if c.headersFile == "" {
+		return c.inlineHeaders, nil
+	}
+
+	fromFile, err := loadHeaderFile(c.headersFile)
+	if err != nil {
+		return nil, fmt.Errorf("reloading headers: %w", err)
+	}
+
+	refreshed := make(http.Header, len(c.inlineHeaders)+len(fromFile))
+	for name, values := range c.inlineHeaders {
+		refreshed[name] = append([]string(nil), values...)
+	}
+
+	for name, values := range fromFile {
+		refreshed[name] = append(refreshed[name], values...)
+	}
+
+	return refreshed, nil
+}
+
+// refreshCreds runs the operator's refresh command, if one is set, then
+// re-reads the credential files. The command's job is to mint fresh
+// credentials into those files (for example re-exporting a live browser
+// session), so detour can keep a bearer that expires in minutes alive across
+// a long run on its own. A command or reload failure keeps the previous
+// credentials rather than dropping the session.
+func (c *Client) refreshCreds(ctx context.Context) {
+	if err := c.runRefreshCmd(ctx); err != nil {
+		slog.Warn("creds refresh command failed, keeping previous session", "reason", err)
+
+		return
+	}
+
+	if err := c.reloadCredentials(); err != nil {
+		slog.Warn("credential refresh failed, keeping previous session", "reason", err)
+	}
+}
+
+func (c *Client) runRefreshCmd(ctx context.Context) error {
+	if c.credsRefreshCmd == "" {
+		return nil
+	}
+
+	// The command is operator-supplied, the same trust level as the cookies
+	// and headers files it is there to regenerate.
+	cmd := exec.CommandContext(ctx, "sh", "-c", c.credsRefreshCmd) //nolint:gosec // G204: operator-supplied refresh command.
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("creds-refresh-cmd: %w: %s", err, bytes.TrimSpace(out))
+	}
 
 	return nil
 }
@@ -140,12 +216,12 @@ func (c *Client) VerifyAuth(ctx context.Context) error {
 }
 
 // WatchAuth keeps the session fresh and watched for the life of ctx. On each
-// refresh interval it re-reads the cookies file (when one is set) and
-// re-probes the auth-check URL (when one is set). A lost session calls stop
-// when --auth-check-required is set, which ends the run the same as Ctrl-C;
-// otherwise it warns and the run continues. It returns immediately; the work
-// runs in a goroutine that exits when ctx is done. A zero refresh interval
-// means no background watching.
+// refresh interval it runs the refresh command (when set), re-reads the
+// cookies and headers files (when set), and re-probes the auth-check URL (when
+// set). A lost session calls stop when --auth-check-required is set, which ends
+// the run the same as Ctrl-C; otherwise it warns and the run continues. It
+// returns immediately; the work runs in a goroutine that exits when ctx is
+// done. A zero refresh interval means no background watching.
 func (c *Client) WatchAuth(ctx context.Context, stop func()) {
 	if c.refresh <= 0 {
 		return
@@ -163,9 +239,7 @@ func (c *Client) watchLoop(ctx context.Context, stop func()) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := c.reloadCookies(); err != nil {
-				slog.Warn("cookie refresh failed, keeping previous session", "reason", err)
-			}
+			c.refreshCreds(ctx)
 
 			if c.probeAuthLost(ctx) && c.authRequired {
 				slog.Error("authenticated session lost, stopping run", "flag", "--auth-check-required")

@@ -18,6 +18,41 @@ func Cookies(cfg config.Config) ([]*http.Cookie, error) {
 	return loadCookies(cfg)
 }
 
+// loadHeaderFile reads a file of "Name: Value" lines (blank lines and lines
+// starting with # are skipped) into a header set. It is the refreshable half
+// of the extra headers, where a rotating bearer lives.
+func loadHeaderFile(path string) (http.Header, error) {
+	file, err := os.Open(path) //nolint:gosec // G304: path is the operator-supplied --headers-file.
+	if err != nil {
+		return nil, fmt.Errorf("opening headers file: %w", err)
+	}
+
+	defer func() { _ = file.Close() }()
+
+	var lines []string
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		lines = append(lines, line)
+	}
+
+	if scanErr := scanner.Err(); scanErr != nil {
+		return nil, fmt.Errorf("reading headers file: %w", scanErr)
+	}
+
+	headers, err := config.ParseHeaders(lines)
+	if err != nil {
+		return nil, err
+	}
+
+	return headers, nil
+}
+
 func loadCookies(cfg config.Config) ([]*http.Cookie, error) {
 	cookies := parseCookieHeader(cfg.Cookie)
 	if cfg.CookiesFile == "" {
