@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/nedlir/detour/internal/js"
@@ -19,13 +20,26 @@ import (
 // no server at all.
 type mapFetcher map[string]string
 
-func (m mapFetcher) Get(_ context.Context, rawURL string) ([]byte, error) {
+// headerFetcher is mapFetcher plus per-URL response headers, for tests that
+// need to see what CollectPage does with them.
+type headerFetcher struct {
+	mapFetcher
+	headers map[string]http.Header
+}
+
+func (m mapFetcher) Get(_ context.Context, rawURL string) ([]byte, http.Header, error) {
 	body, ok := m[rawURL]
 	if !ok {
-		return nil, errors.New("not found: " + rawURL)
+		return nil, nil, errors.New("not found: " + rawURL)
 	}
 
-	return []byte(body), nil
+	return []byte(body), nil, nil
+}
+
+func (h headerFetcher) Get(ctx context.Context, rawURL string) ([]byte, http.Header, error) {
+	body, _, err := h.mapFetcher.Get(ctx, rawURL)
+
+	return body, h.headers[rawURL], err
 }
 
 func TestCollectPageFollowsScripts(t *testing.T) {
@@ -157,25 +171,83 @@ func TestCollectPageLabClientSideFixtures(t *testing.T) {
 	}
 }
 
+// TestCollectPageMitigatesTabnabbingBehindCOOP proves a page that already
+// sends Cross-Origin-Opener-Policy: same-origin gets the OR-F09 finding
+// demoted to info rather than reported as an exploitable candidate: the
+// browser severs window.opener on its own regardless of the missing
+// rel=noopener.
+func TestCollectPageMitigatesTabnabbingBehindCOOP(t *testing.T) {
+	t.Parallel()
+
+	const (
+		siteURL = "https://site.lab/"
+		page    = `<a href="https://external.example/" target="_blank">external</a>`
+	)
+
+	f := headerFetcher{
+		mapFetcher: mapFetcher{siteURL: page},
+		headers: map[string]http.Header{
+			siteURL: {"Cross-Origin-Opener-Policy": []string{"same-origin"}},
+		},
+	}
+
+	report, err := js.CollectPage(context.Background(), f, siteURL)
+	require.NoError(t, err)
+
+	verdict, ok := verdictByID(report.Verdicts, "OR-F09")
+	require.True(t, ok, "missing OR-F09 in %v", ids(report.Verdicts))
+	assert.Equal(t, js.SeverityInfo, verdict.Severity)
+	assert.Contains(t, strings.Join(verdict.Evidence, " "), "Cross-Origin-Opener-Policy")
+}
+
+// TestCollectPageDoesNotMitigateOnPartialCOOP proves same-origin-allow-popups
+// is not treated as full mitigation: it still lets some opener access
+// through, so claiming it blocks the finding would overstate what is
+// actually safe.
+func TestCollectPageDoesNotMitigateOnPartialCOOP(t *testing.T) {
+	t.Parallel()
+
+	const (
+		siteURL = "https://site.lab/"
+		page    = `<a href="https://external.example/" target="_blank">external</a>`
+	)
+
+	f := headerFetcher{
+		mapFetcher: mapFetcher{siteURL: page},
+		headers: map[string]http.Header{
+			siteURL: {"Cross-Origin-Opener-Policy": []string{"same-origin-allow-popups"}},
+		},
+	}
+
+	report, err := js.CollectPage(context.Background(), f, siteURL)
+	require.NoError(t, err)
+
+	verdict, ok := verdictByID(report.Verdicts, "OR-F09")
+	require.True(t, ok, "missing OR-F09 in %v", ids(report.Verdicts))
+	assert.Equal(t, js.SeverityCandidate, verdict.Severity)
+}
+
 // liveFetcher talks to the in-process lab over plain net/http.
 type liveFetcher struct{}
 
-func (liveFetcher) Get(ctx context.Context, rawURL string) ([]byte, error) {
+func (liveFetcher) Get(ctx context.Context, rawURL string) ([]byte, http.Header, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= http.StatusBadRequest {
-		return nil, errors.New("status " + resp.Status)
+		return nil, nil, errors.New("status " + resp.Status)
 	}
 
-	return io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+
+	return body, resp.Header, err
 }

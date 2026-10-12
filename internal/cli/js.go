@@ -165,13 +165,13 @@ func isLocalPath(target string) bool {
 // fileFetcher reads a script from disk.
 type fileFetcher struct{}
 
-func (fileFetcher) Get(_ context.Context, path string) ([]byte, error) {
+func (fileFetcher) Get(_ context.Context, path string) ([]byte, http.Header, error) {
 	raw, err := os.ReadFile(strings.TrimPrefix(path, "file://"))
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
+		return nil, nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 
-	return raw, nil
+	return raw, nil, nil
 }
 
 // httpFetcher pulls scripts through the shared scoped client, so the scope
@@ -180,27 +180,27 @@ type httpFetcher struct {
 	client *client.Client
 }
 
-func (h *httpFetcher) Get(ctx context.Context, rawURL string) ([]byte, error) {
+func (h *httpFetcher) Get(ctx context.Context, rawURL string) ([]byte, http.Header, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("building request: %w", err)
+		return nil, nil, fmt.Errorf("building request: %w", err)
 	}
 
 	resp, err := h.client.Do(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("fetching %s: %w", rawURL, err)
+		return nil, nil, fmt.Errorf("fetching %s: %w", rawURL, err)
 	}
 
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= http.StatusBadRequest {
-		return nil, fmt.Errorf("fetching %s: status %d", rawURL, resp.StatusCode)
+		return nil, nil, fmt.Errorf("fetching %s: status %d", rawURL, resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxScriptBytes))
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", rawURL, err)
+		return nil, nil, fmt.Errorf("reading %s: %w", rawURL, err)
 	}
 
-	return body, nil
+	return body, resp.Header, nil
 }
