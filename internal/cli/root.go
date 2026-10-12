@@ -32,19 +32,19 @@ func NewRoot() *cobra.Command {
 	)
 
 	root := &cobra.Command{
-		Use:   "detour [target]",
+		Use:   "detour [target...]",
 		Short: "Open redirect discovery and verification engine",
 		Long: "detour reconstructs where a navigation destination is hiding, how it is validated, and how a " +
 			"browser resolves it.\n\nGiven a target, it runs the whole pipeline: surface, harvest, select, " +
 			"attack, and with --headless, browser confirmation.",
 		Version: version,
-		Args:    cobra.MaximumNArgs(1),
+		Args:    cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
 			}
 
-			return runPipeline(cmd, args[0], pipeline, pipelineHeadless)
+			return runPipelineTargets(cmd, args, pipeline, pipelineHeadless)
 		},
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			if err := bindFlags(v, cmd); err != nil {

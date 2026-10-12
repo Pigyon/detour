@@ -18,6 +18,43 @@ func Cookies(cfg config.Config) ([]*http.Cookie, error) {
 	return loadCookies(cfg)
 }
 
+// Headers resolves the operator's inline --header values and the --headers-file
+// into one set. The browser stage needs the same headers the HTTP client
+// carries, so a bearer that lives in the headers file reaches both.
+func Headers(cfg config.Config) (http.Header, error) {
+	inline, err := config.ParseHeaders(cfg.Headers)
+	if err != nil {
+		return nil, err
+	}
+
+	if cfg.HeadersFile == "" {
+		return inline, nil
+	}
+
+	fromFile, err := loadHeaderFile(cfg.HeadersFile)
+	if err != nil {
+		return nil, err
+	}
+
+	return mergeHeaders(inline, fromFile), nil
+}
+
+// mergeHeaders returns a new header set with base's values first and extra's
+// appended, mutating neither input.
+func mergeHeaders(base, extra http.Header) http.Header {
+	merged := make(http.Header, len(base)+len(extra))
+
+	for name, values := range base {
+		merged[name] = append([]string(nil), values...)
+	}
+
+	for name, values := range extra {
+		merged[name] = append(merged[name], values...)
+	}
+
+	return merged
+}
+
 // loadHeaderFile reads a file of "Name: Value" lines (blank lines and lines
 // starting with # are skipped) into a header set. It is the refreshable half
 // of the extra headers, where a rotating bearer lives.
