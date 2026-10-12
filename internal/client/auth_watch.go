@@ -106,7 +106,11 @@ func (c *Client) reloadHeaderFile() (http.Header, error) {
 // credentials rather than dropping the session.
 func (c *Client) refreshCreds(ctx context.Context) {
 	if err := c.runRefreshCmd(ctx); err != nil {
-		slog.Warn("creds refresh command failed, keeping previous session", "reason", err)
+		// A cancelled context is the run ending, not a refresh failure: the
+		// command was killed on the way out, so there is nothing to warn about.
+		if ctx.Err() == nil {
+			slog.Warn("creds refresh command failed, keeping previous session", "reason", err)
+		}
 
 		return
 	}
@@ -230,6 +234,10 @@ func (c *Client) watchLoop(ctx context.Context, stop func()) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if ctx.Err() != nil {
+				return
+			}
+
 			c.refreshCreds(ctx)
 
 			if c.probeAuthLost(ctx) && c.authRequired {
@@ -252,7 +260,9 @@ func (c *Client) probeAuthLost(ctx context.Context) bool {
 
 	ok, err := c.CheckAuth(ctx)
 	if err != nil {
-		slog.Warn("auth-check probe failed, keeping session", "reason", err)
+		if ctx.Err() == nil {
+			slog.Warn("auth-check probe failed, keeping session", "reason", err)
+		}
 
 		return false
 	}
