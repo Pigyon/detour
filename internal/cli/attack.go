@@ -96,6 +96,18 @@ func runAttack(cmd *cobra.Command, source string, opts attackOptions) error {
 		return err
 	}
 
+	if err := c.VerifyAuth(cmd.Context()); err != nil {
+		return err
+	}
+
+	// A lost session cancels the run the same way a budget or Ctrl-C does, so
+	// the watcher gets a context it can stop and the scan reports what it
+	// proved before the session died.
+	ctx, stop := context.WithCancel(cmd.Context())
+	defer stop()
+
+	c.WatchAuth(ctx, stop)
+
 	urls, err := adapter.LoadPath(source)
 	if err != nil {
 		return err
@@ -119,7 +131,7 @@ func runAttack(cmd *cobra.Command, source string, opts attackOptions) error {
 
 	defer closer()
 
-	findings, err := eng.Run(cmd.Context(), urls)
+	findings, err := eng.Run(ctx, urls)
 	if err != nil && !noteStopped(cmd, err) {
 		return err
 	}

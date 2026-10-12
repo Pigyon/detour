@@ -135,6 +135,14 @@ func registerPersistentFlags(root *cobra.Command) {
 	fs.Duration("timeout", 10*time.Second, "per-request timeout")
 	fs.Duration("budget", 0,
 		"stop the whole run after this long and report what was proved so far (0 means unlimited)")
+	fs.Duration("cookies-refresh", 0,
+		"re-read --cookies-file on this interval to keep a short-lived session fresh (0 disables)")
+	fs.String("auth-check", "",
+		"in-scope URL returning authenticated-only content; probed to detect a lost session")
+	fs.String("auth-check-expect", "",
+		"substring that must appear in --auth-check's response while authenticated")
+	fs.Bool("auth-check-required", false,
+		"stop the run if the --auth-check probe shows the session is not authenticated")
 }
 
 func bindFlags(v *viper.Viper, cmd *cobra.Command) error {

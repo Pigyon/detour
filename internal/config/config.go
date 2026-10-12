@@ -59,6 +59,23 @@ type Config struct {
 	// that expires is treated the same as Ctrl-C: the run stops and reports
 	// what it already proved, rather than losing the whole scan.
 	Budget time.Duration `mapstructure:"budget"`
+	// CookiesRefresh re-reads CookiesFile on this interval so a short-lived
+	// session stays valid across a long run. Zero disables it. The file is
+	// expected to be rewritten out of band, for example by re-exporting a
+	// live browser session, so a five-minute bearer or a rotating bot-defense
+	// cookie does not silently expire mid-scan.
+	CookiesRefresh time.Duration `mapstructure:"cookies-refresh"`
+	// AuthCheck is an in-scope URL that returns authenticated-only content.
+	// detour probes it to tell whether the session is still logged in, so an
+	// expired session is reported rather than silently scanned as anonymous.
+	AuthCheck string `mapstructure:"auth-check"`
+	// AuthCheckExpect must appear in AuthCheck's response body while the
+	// session is authenticated. Empty means any 2xx that is not a login
+	// redirect counts as authenticated.
+	AuthCheckExpect string `mapstructure:"auth-check-expect"`
+	// AuthCheckRequired stops the run when the AuthCheck probe shows the
+	// session is not authenticated, rather than only warning.
+	AuthCheckRequired bool `mapstructure:"auth-check-required"`
 }
 
 // NewViper returns an isolated viper with defaults, env prefix, and key replacer.
@@ -82,6 +99,8 @@ func SetDefaults(v *viper.Viper) {
 	v.SetDefault("timeout", defaultTimeout)
 	v.SetDefault("delay", time.Duration(0))
 	v.SetDefault("budget", time.Duration(0))
+	v.SetDefault("cookies-refresh", time.Duration(0))
+	v.SetDefault("auth-check-required", false)
 }
 
 // LoadFile reads an optional YAML config. A missing file is not an error.

@@ -60,3 +60,22 @@ func (c *Client) ForceRecover(host string) {
 
 	h.recover(time.Now())
 }
+
+// ReloadCookies re-reads the cookies file into the live set, exposed so a
+// test can drive a refresh without waiting on the background ticker.
+func (c *Client) ReloadCookies() error {
+	return c.reloadCookies()
+}
+
+// LiveCookieNames reports the names of the cookies the client would replay
+// right now, so a test can see whether a refresh took effect.
+func (c *Client) LiveCookieNames() []string {
+	snap := c.creds.snapshot()
+	names := make([]string, 0, len(snap))
+
+	for _, ck := range snap {
+		names = append(names, ck.Name)
+	}
+
+	return names
+}
