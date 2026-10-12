@@ -102,7 +102,7 @@ func writeJSOutput(
 	findings = maybeEscalate(findings, escalate)
 
 	if outDir != "" {
-		if err := report.WriteVersion(outDir, findings, version); err != nil {
+		if _, err := report.WriteVersion(outDir, findings, version); err != nil {
 			return err
 		}
 	}

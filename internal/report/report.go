@@ -78,7 +78,9 @@ func Apply(findings []model.Finding, allow map[string]struct{}) []model.Finding 
 // the last three dedupe by root cause because a reader wants defects, not
 // demonstrations.
 func Write(dir string, findings []model.Finding) error {
-	return WriteVersion(dir, findings, "dev")
+	_, err := WriteVersion(dir, findings, "dev")
+
+	return err
 }
 
 // Prepare creates the report directory up front, so an unwritable path is an
@@ -97,40 +99,53 @@ func Prepare(dir string) error {
 }
 
 // WriteVersion is Write with the tool version recorded in the SARIF log.
-func WriteVersion(dir string, findings []model.Finding, version string) error {
+//
+// The returned Diff says what changed in the findings directory since
+// whatever a previous run into the same dir left there: which directories
+// are new, which the previous run already had, and which it had but this
+// run did not reproduce.
+func WriteVersion(dir string, findings []model.Finding, version string) (Diff, error) {
 	if dir == "" {
-		return errors.New("empty report directory")
+		return Diff{}, errors.New("empty report directory")
 	}
 
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
-		return fmt.Errorf("creating report directory: %w", err)
+		return Diff{}, fmt.Errorf("creating report directory: %w", err)
 	}
 
 	if err := writeJSONL(filepath.Join(dir, fileJSONL), findings); err != nil {
-		return err
+		return Diff{}, err
 	}
 
 	unique := Dedupe(findings)
 
 	if err := writeJSON(filepath.Join(dir, fileJSON), unique); err != nil {
-		return err
+		return Diff{}, err
 	}
 
 	if err := writeRunReport(filepath.Join(dir, fileReport), unique); err != nil {
-		return err
+		return Diff{}, err
 	}
 
 	findingsDir := filepath.Join(dir, dirFindings)
 
+	// Must run before writeFindingReports: once this run's own directories
+	// exist, a pre-existing one can no longer be told apart from one this
+	// run just created.
+	diff, err := diffAndMarkStale(findingsDir, unique)
+	if err != nil {
+		return Diff{}, err
+	}
+
 	if err := writeFindingReports(findingsDir, unique); err != nil {
-		return err
+		return Diff{}, err
 	}
 
-	if err := writeManifestAndMarkStale(findingsDir, unique); err != nil {
-		return err
+	if err := writeManifest(findingsDir, unique); err != nil {
+		return Diff{}, err
 	}
 
-	return writeSARIF(filepath.Join(dir, fileSARIF), unique, version)
+	return diff, writeSARIF(filepath.Join(dir, fileSARIF), unique, version)
 }
 
 func writeSARIF(path string, findings []model.Finding, version string) error {
