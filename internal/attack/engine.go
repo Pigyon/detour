@@ -297,6 +297,15 @@ type Coverage struct {
 	// parameters on before anything else in the harvest. A bare count threw
 	// that away the moment the run finished.
 	RedirectorURLs []string
+	// OpaqueEnvelopes names sources where a blob was found but none of the
+	// standard bypass strategies confirmed a destination inside it.
+	//
+	// attackBlobs already tries every URL, so this is not "never checked":
+	// it is "checked, resisted the automatic strategies, still worth a
+	// human looking at what detour decode actually finds inside it." A run
+	// that only ever reports confirmed bypasses leaves this entirely
+	// invisible, which looks identical to no envelope having been there.
+	OpaqueEnvelopes []string
 }
 
 // Engine probes candidates with the built-in payload set.
@@ -367,6 +376,13 @@ func (e *Engine) noteCoverage(reachable, redirector bool, params int, source str
 	}
 
 	e.coverage.Params += params
+}
+
+func (e *Engine) noteOpaqueEnvelope(source string) {
+	e.coverageMu.Lock()
+	defer e.coverageMu.Unlock()
+
+	e.coverage.OpaqueEnvelopes = append(e.coverage.OpaqueEnvelopes, source)
 }
 
 // SetCheckpoint records attempts so --resume can skip completed work.

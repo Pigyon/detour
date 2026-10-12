@@ -20,6 +20,10 @@ func (e *Engine) attackBlobs(ctx context.Context, raw string) ([]model.Finding, 
 		return nil, err
 	}
 
+	if len(blobs) > 0 {
+		e.noteOpaqueEnvelope(raw)
+	}
+
 	hits := []model.Finding{}
 
 	for _, b := range blobs {
