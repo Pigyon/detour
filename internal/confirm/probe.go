@@ -2,6 +2,7 @@ package confirm
 
 import (
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/nedlir/detour/internal/model"
@@ -26,34 +27,79 @@ var notNavigable = map[string]struct{}{
 	"OR-C03": {},
 }
 
-// ProbeFor builds the URL to drive in the browser for a candidate finding,
-// and reports whether the finding is browser-confirmable at all.
-func ProbeFor(f model.Finding, canary string) (string, bool) {
+// ProbesFor builds the URLs worth driving in the browser for a candidate
+// finding, and reports whether the finding is browser-confirmable at all.
+//
+// Usually one. When the JS stage traced a sink's input to a concrete query
+// parameter, that is the only one worth trying. When it could not (the
+// value passed through an expression the tracer gives up on), there is
+// still something to try: every query parameter the source URL already
+// carries, in case one of them is the untraced path to the sink. A wrong
+// guess here can never produce a false confirmation, since a browser visit
+// still has to prove the destination was actually reached; the only cost of
+// guessing wrong is a visit that finds nothing, same as not guessing at all.
+func ProbesFor(f model.Finding, canary string) []string {
 	if _, skip := notNavigable[f.TechniqueID]; skip {
-		return "", false
+		return nil
 	}
 
 	// The attack engine already built a concrete request; replay it as is.
 	if f.ProbeURL != "" {
-		return f.ProbeURL, true
+		return []string{f.ProbeURL}
 	}
 
 	source := f.Candidate.SourceURL
 	if source == "" || f.Payload == "" {
-		return "", false
+		return nil
 	}
 
 	payload := expand(f, canary)
 
 	if f.TechniqueID == techniqueHash {
-		return withFragment(source, payload)
+		if u, ok := withFragment(source, payload); ok {
+			return []string{u}
+		}
+
+		return nil
 	}
 
-	if f.Candidate.ParamName == "" {
-		return "", false
+	if f.Candidate.ParamName != "" {
+		if u, ok := withParam(source, f.Candidate.ParamName, payload); ok {
+			return []string{u}
+		}
+
+		return nil
 	}
 
-	return withParam(source, f.Candidate.ParamName, payload)
+	return guessedParamProbes(source, payload)
+}
+
+// guessedParamProbes tries every query parameter already on source, sorted
+// for a deterministic attempt order across runs.
+func guessedParamProbes(source, payload string) []string {
+	parsed, err := url.Parse(source)
+	if err != nil {
+		return nil
+	}
+
+	query := parsed.Query()
+	names := make([]string, 0, len(query))
+
+	for name := range query {
+		names = append(names, name)
+	}
+
+	sort.Strings(names)
+
+	out := make([]string, 0, len(names))
+
+	for _, name := range names {
+		if u, ok := withParam(source, name, payload); ok {
+			out = append(out, u)
+		}
+	}
+
+	return out
 }
 
 // expand fills in the placeholders the JS stage leaves behind.

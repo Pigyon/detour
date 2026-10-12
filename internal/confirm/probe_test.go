@@ -9,14 +9,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestProbeFor(t *testing.T) {
+func TestProbesFor(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		build    func() model.Finding
-		want     string
-		wantable bool
+		name  string
+		build func() model.Finding
+		want  []string
 	}{
 		{
 			name: "a concrete probe is replayed as written",
@@ -26,32 +25,28 @@ func TestProbeFor(t *testing.T) {
 
 				return f
 			},
-			want:     "https://site.lab/go?url=%2F%2Fcanary.invalid",
-			wantable: true,
+			want: []string{"https://site.lab/go?url=%2F%2Fcanary.invalid"},
 		},
 		{
 			name: "a parameter payload is expanded and set",
 			build: func() model.Finding {
 				return candidate("OR-C01", "https://site.lab/signin", "backUrl", "https://{{canary}}/x")
 			},
-			want:     "https://site.lab/signin?backUrl=https%3A%2F%2Fcanary.invalid%2Fx",
-			wantable: true,
+			want: []string{"https://site.lab/signin?backUrl=https%3A%2F%2Fcanary.invalid%2Fx"},
 		},
 		{
 			name: "a hash sink payload rides in the fragment",
 			build: func() model.Finding {
 				return candidate("OR-C02", "https://site.lab/page", "", "https://{{canary}}/x")
 			},
-			want:     "https://site.lab/page#https://canary.invalid/x",
-			wantable: true,
+			want: []string{"https://site.lab/page#https://canary.invalid/x"},
 		},
 		{
 			name: "the target placeholder becomes the source host",
 			build: func() model.Finding {
 				return candidate("OR-A01", "https://site.lab/go", "url", "https://{{target}}@{{canary}}/")
 			},
-			want:     "https://site.lab/go?url=https%3A%2F%2Fsite.lab%40canary.invalid%2F",
-			wantable: true,
+			want: []string{"https://site.lab/go?url=https%3A%2F%2Fsite.lab%40canary.invalid%2F"},
 		},
 		{
 			name: "the allowed placeholder becomes a trusted host",
@@ -61,23 +56,39 @@ func TestProbeFor(t *testing.T) {
 
 				return f
 			},
-			want:     "https://site.lab/go?url=https%3A%2F%2Fcanary.invalid.allowed.lab%2F",
-			wantable: true,
+			want: []string{"https://site.lab/go?url=https%3A%2F%2Fcanary.invalid.allowed.lab%2F"},
 		},
 		{
-			name:     "reverse tabnabbing is not a navigation",
-			build:    func() model.Finding { return candidate("OR-F09", "https://site.lab/p", "", "x") },
-			wantable: false,
+			name:  "reverse tabnabbing is not a navigation",
+			build: func() model.Finding { return candidate("OR-F09", "https://site.lab/p", "", "x") },
+			want:  nil,
 		},
 		{
-			name:     "a sandboxless frame is not a navigation",
-			build:    func() model.Finding { return candidate("OR-C03", "https://site.lab/p", "", "x") },
-			wantable: false,
+			name:  "a sandboxless frame is not a navigation",
+			build: func() model.Finding { return candidate("OR-C03", "https://site.lab/p", "", "x") },
+			want:  nil,
 		},
 		{
-			name:     "no parameter and no payload is not probeable",
-			build:    func() model.Finding { return candidate("OR-C01", "https://site.lab/p", "", "") },
-			wantable: false,
+			name:  "no parameter and no payload is not probeable",
+			build: func() model.Finding { return candidate("OR-C01", "https://site.lab/p", "", "") },
+			want:  nil,
+		},
+		{
+			name: "an unresolved parameter name guesses from the source URL's own query",
+			build: func() model.Finding {
+				return candidate("OR-C01", "https://site.lab/app?b=1&a=2", "", "https://{{canary}}/")
+			},
+			want: []string{
+				"https://site.lab/app?a=https%3A%2F%2Fcanary.invalid%2F&b=1",
+				"https://site.lab/app?a=2&b=https%3A%2F%2Fcanary.invalid%2F",
+			},
+		},
+		{
+			name: "an unresolved parameter name with no query to guess from stays unprobeable",
+			build: func() model.Finding {
+				return candidate("OR-C01", "https://site.lab/app", "", "https://{{canary}}/")
+			},
+			want: nil,
 		},
 	}
 
@@ -85,12 +96,15 @@ func TestProbeFor(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, ok := confirm.ProbeFor(tt.build(), "canary.invalid")
-			require.Equal(t, tt.wantable, ok)
+			got := confirm.ProbesFor(tt.build(), "canary.invalid")
 
-			if tt.wantable {
-				assert.Equal(t, tt.want, got)
+			if tt.want == nil {
+				assert.Empty(t, got)
+
+				return
 			}
+
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
