@@ -127,6 +127,39 @@ func TestAttackCommandResume(t *testing.T) {
 // TestAttackCommandReportsDiffOnRerun proves a second run into the same
 // --out says what changed, and a first run says nothing (there is nothing
 // to diff against yet).
+// TestAttackCommandWritesOpaqueEnvelopeBreakdown is end to end: a target
+// that never acts on a decodable envelope still gets the full decoded
+// breakdown written to --out, not just a debug log line saying one exists.
+func TestAttackCommandWritesOpaqueEnvelopeBreakdown(t *testing.T) {
+	t.Parallel()
+
+	unresponsive := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(unresponsive.Close)
+
+	blob, err := lab.EncodeClick("https://" + lab.AllowedHost + "/home")
+	require.NoError(t, err)
+
+	target := unresponsive.URL + "/track/click2/" + blob + ".html"
+
+	list := filepath.Join(t.TempDir(), "urls.txt")
+	require.NoError(t, os.WriteFile(list, []byte(target+"\n"), 0o600))
+
+	dir := t.TempDir()
+
+	cmd := cli.NewRoot()
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs(attackArgs("--out", dir, list))
+
+	require.NoError(t, cmd.Execute())
+
+	raw, err := os.ReadFile(filepath.Join(dir, "opaque_envelopes.json")) //nolint:gosec // G304: dir is t.TempDir output.
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), target)
+}
+
 func TestAttackCommandReportsDiffOnRerun(t *testing.T) {
 	t.Parallel()
 

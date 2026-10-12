@@ -130,7 +130,7 @@ func runAttack(cmd *cobra.Command, source string, opts attackOptions) error {
 	findings = maybeConfirm(cmd, cfg, findings, opts.headless, opts.outDir)
 	findings = maybeEscalate(findings, opts.escalate)
 
-	return writeAttackOutput(cmd, findings, allow, opts.outDir)
+	return writeAttackOutput(cmd, findings, allow, opts.outDir, eng.Coverage().OpaqueEnvelopes)
 }
 
 func attachCheckpoint(eng *attack.Engine, resume string) (func(), error) {
@@ -184,7 +184,9 @@ func reportCoverage(cmd *cobra.Command, c attack.Coverage) {
 	}
 }
 
-func writeAttackOutput(cmd *cobra.Command, findings []model.Finding, allow map[string]struct{}, outDir string) error {
+func writeAttackOutput(
+	cmd *cobra.Command, findings []model.Finding, allow map[string]struct{}, outDir string, opaqueEnvelopes []string,
+) error {
 	findings = report.Apply(findings, allow)
 	findings = suggestSeverities(findings)
 
@@ -212,7 +214,7 @@ func writeAttackOutput(cmd *cobra.Command, findings []model.Finding, allow map[s
 
 	reportDiff(cmd, diff)
 
-	return nil
+	return report.WriteOpaqueEnvelopes(outDir, opaqueEnvelopes)
 }
 
 // reportDiff says what changed since a previous run into the same --out,
