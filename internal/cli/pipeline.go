@@ -70,7 +70,7 @@ func runPipeline(cmd *cobra.Command, target string, flags *reconFlags, headless 
 	// flag a lie, which matters most to the operator who set it because their
 	// testing window had closed.
 	if flags.passive {
-		return writeAttackOutput(cmd, passiveFindings(cmd, urls, flags), allow, flags.outDir)
+		return writeAttackOutput(cmd, passiveFindings(cmd, urls, flags), allow, flags.outDir, nil)
 	}
 
 	// The js stage runs first. It is the only stage that can read what a
@@ -119,7 +119,7 @@ func runPipeline(cmd *cobra.Command, target string, flags *reconFlags, headless 
 	findings = maybeConfirm(cmd, cfg, findings, headless, flags.outDir)
 	findings = maybeEscalate(findings, flags.escalate)
 
-	return writeAttackOutput(cmd, findings, allow, flags.outDir)
+	return writeAttackOutput(cmd, findings, allow, flags.outDir, eng.Coverage().OpaqueEnvelopes)
 }
 
 // passiveFindings reports what a run can know without sending the target a
