@@ -9,3 +9,8 @@ func DefaultResumePath(target, outDir string) string {
 func Slugify(s string) string {
 	return slugify(s)
 }
+
+// TargetOutDir exposes targetOutDir for an external test.
+func TargetOutDir(base, target string) string {
+	return targetOutDir(base, target)
+}

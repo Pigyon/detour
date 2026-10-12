@@ -95,16 +95,7 @@ func (c *Client) reloadHeaderFile() (http.Header, error) {
 		return nil, fmt.Errorf("reloading headers: %w", err)
 	}
 
-	refreshed := make(http.Header, len(c.inlineHeaders)+len(fromFile))
-	for name, values := range c.inlineHeaders {
-		refreshed[name] = append([]string(nil), values...)
-	}
-
-	for name, values := range fromFile {
-		refreshed[name] = append(refreshed[name], values...)
-	}
-
-	return refreshed, nil
+	return mergeHeaders(c.inlineHeaders, fromFile), nil
 }
 
 // refreshCreds runs the operator's refresh command, if one is set, then

@@ -38,6 +38,52 @@ const (
 // Each stage narrows the one before it. The point of the ordering is that the
 // attack engine, which is the only stage that spends requests on payloads,
 // sees a small ranked list rather than an archive dump.
+// runPipelineTargets runs the whole pipeline once per target. A program whose
+// scope spans several apex domains (a web host, an API host, a separate brand
+// domain) needs one run each, since surface enumeration only expands the one
+// apex it is given. With more than one target each writes into its own
+// subdirectory of --out so their reports do not overwrite each other. One
+// target failing is reported and the sweep moves on; a budget or Ctrl-C stops
+// the whole sweep.
+func runPipelineTargets(cmd *cobra.Command, targets []string, flags *reconFlags, headless bool) error {
+	if len(targets) == 1 {
+		return runPipeline(cmd, targets[0], flags, headless)
+	}
+
+	base := flags.outDir
+	errs := []error{}
+
+	for _, target := range targets {
+		if cmd.Context().Err() != nil {
+			break
+		}
+
+		flags.outDir = targetOutDir(base, target)
+
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "\n=== target: %s ===\n", target)
+
+		if err := runPipeline(cmd, target, flags, headless); err != nil {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "target %s failed: %v\n", target, err)
+			errs = append(errs, fmt.Errorf("%s: %w", target, err))
+		}
+	}
+
+	flags.outDir = base
+
+	return errors.Join(errs...)
+}
+
+// targetOutDir places each target's output under its own subdirectory of the
+// base --out so a multi-target sweep does not overwrite one report with the
+// next. An empty base (no --out) stays empty: nothing is written to disk.
+func targetOutDir(base, target string) string {
+	if base == "" {
+		return ""
+	}
+
+	return filepath.Join(base, slugify(target))
+}
+
 func runPipeline(cmd *cobra.Command, target string, flags *reconFlags, headless bool) error {
 	cfg, ok := config.FromContext(cmd.Context())
 	if !ok {
@@ -76,7 +122,7 @@ func runPipeline(cmd *cobra.Command, target string, flags *reconFlags, headless 
 
 	c.WatchAuth(ctx, stop)
 
-	urls := pipelineURLs(cmd, cfg, c, target, flags)
+	urls := pipelineURLs(cmd, cfg, c, target, flags, headless)
 	if len(urls) == 0 {
 		return errors.New("nothing to attack: no injection points survived selection")
 	}
@@ -268,6 +314,7 @@ func pipelineURLs(
 	c *client.Client,
 	target string,
 	flags *reconFlags,
+	headless bool,
 ) []string {
 	domain, _ := splitTarget(target)
 	raw := []string{}
@@ -290,6 +337,14 @@ func pipelineURLs(
 
 	_, base := splitTarget(target)
 	raw = append(raw, base)
+
+	// With the browser on, a crawl of the target discovers the runtime URLs a
+	// single-page app builds in JavaScript: nav routes and XHR or fetch calls
+	// that never appear in the server HTML the harvest reads. They flow through
+	// the same selection as every other harvested URL.
+	if headless {
+		raw = append(raw, crawlDiscover(cmd, cfg, []string{base})...)
+	}
 
 	// Archives answer with whatever they have indexed, and for some targets
 	// most of it belongs to somebody else. Without this filter a run attacks

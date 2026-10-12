@@ -81,7 +81,7 @@ func newConfirmer(cfg config.Config, outDir string) (*confirm.Confirmer, error) 
 		return nil, err
 	}
 
-	headers, err := config.ParseHeaders(cfg.Headers)
+	headers, err := client.Headers(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -102,6 +102,26 @@ func newConfirmer(cfg config.Config, outDir string) (*confirm.Confirmer, error) 
 		Cookies:     cookies,
 		ArtifactDir: outDir,
 	}), nil
+}
+
+// crawlDiscover drives the authenticated headless browser to each seed and
+// returns the in-scope, query-bearing URLs it requested at runtime: injection
+// points a static harvest cannot see on a single-page app. A missing browser
+// or a failed crawl warns and yields nothing rather than ending the run.
+func crawlDiscover(cmd *cobra.Command, cfg config.Config, seeds []string) []string {
+	confirmer, err := newConfirmer(cfg, "")
+	if err != nil {
+		slog.Warn("skipping browser crawl", "reason", err)
+
+		return nil
+	}
+
+	found := confirmer.Crawl(cmd.Context(), seeds)
+	if len(found) > 0 {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "crawl: %d runtime urls discovered in the browser\n", len(found))
+	}
+
+	return found
 }
 
 // browserTimeoutFactor stretches the per-request timeout into a page budget:
