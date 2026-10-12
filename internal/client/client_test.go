@@ -493,3 +493,51 @@ func TestRecoveryNeverExceedsTheConfiguredRate(t *testing.T) {
 
 	assert.InEpsilon(t, base, c.RateFor(host), 1e-9, "recovery must not exceed the configured rate")
 }
+
+// TestRealSustainedCollapseEndsInGiveUp is the genuine proof the other
+// give-up tests are a fast stand-in for: every one of them uses ForceSlow
+// to skip the real rate.Limiter.Wait a collapsed host actually blocks on,
+// which proves the state machine but not that a real sequence of requests
+// against a real host reaches the same place.
+//
+// Rate starts one halving above the floor on purpose: reaching the floor
+// through a real halving, then five more real floor-rate waits to cross the
+// give-up threshold, is the minimum real time the actual collapse takes.
+// Starting any higher would multiply this by however many halvings it
+// takes to get there, for no more proof than this already gives.
+//
+//nolint:paralleltest // deliberately slow and timing-sensitive; must not share a scheduler with others
+func TestRealSustainedCollapseEndsInGiveUp(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+
+	host := hostOf(t, srv.URL)
+	c := newTestClient(t, config.Config{Rate: 2 * client.MinRate}, host)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	for !c.HasGivenUpOn(host) {
+		require.NoError(t, ctx.Err(), "the real collapse did not reach give-up within the time budget")
+		drain(c.Do(ctx, req))
+	}
+
+	// The promise a given-up host makes is a fast failure, not just an
+	// eventual one. Proving that needs a real clock: this is the one place
+	// in the suite that checks actual elapsed time rather than call counts.
+	start := time.Now()
+	resp, doErr := c.Do(ctx, req)
+
+	drain(resp, nil)
+
+	elapsed := time.Since(start)
+
+	require.ErrorIs(t, doErr, client.ErrHostGivenUp)
+	assert.Less(t, elapsed, time.Second,
+		"a given-up host must fail immediately, not after another floor-rate wait")
+}
