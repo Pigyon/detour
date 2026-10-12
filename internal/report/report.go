@@ -129,6 +129,14 @@ func WriteVersion(dir string, findings []model.Finding, version string) (Diff, e
 
 	findingsDir := filepath.Join(dir, dirFindings)
 
+	// Created here, not left to writeFindingReports's loop: a run with zero
+	// findings never enters that loop at all, and the manifest still needs
+	// somewhere to write MANIFEST.json even when there is nothing else to
+	// put beside it.
+	if err := os.MkdirAll(findingsDir, dirPerm); err != nil {
+		return Diff{}, fmt.Errorf("creating findings directory: %w", err)
+	}
+
 	// Must run before writeFindingReports: once this run's own directories
 	// exist, a pre-existing one can no longer be told apart from one this
 	// run just created.
