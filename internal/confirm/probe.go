@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/nedlir/detour/internal/corpus"
 	"github.com/nedlir/detour/internal/model"
 )
 
@@ -74,22 +75,46 @@ func ProbesFor(f model.Finding, canary string) []string {
 	return guessedParamProbes(source, payload)
 }
 
-// guessedParamProbes tries every query parameter already on source, sorted
-// for a deterministic attempt order across runs.
+// guessedParamProbes tries every query parameter already on source first,
+// then the corpus's own canonical redirect-shaped names that are not
+// already among them.
+//
+// A parameter already on the URL is tried first because the tracer found
+// some evidence tying the sink to this page, not just to parameters in
+// general. The canonical names are the wider net: the real controlling
+// parameter is routinely absent from the URL a passive crawl ever saw at
+// all, which --deep's own brute force exists to find for a harvested URL
+// with no candidate; a confirmation pass with an unresolved parameter name
+// is exactly that same situation, so it earns the same list.
 func guessedParamProbes(source, payload string) []string {
 	parsed, err := url.Parse(source)
 	if err != nil {
 		return nil
 	}
 
-	query := parsed.Query()
-	names := make([]string, 0, len(query))
+	seen := map[string]struct{}{}
+	names := []string{}
 
-	for name := range query {
-		names = append(names, name)
+	existing := make([]string, 0, len(parsed.Query()))
+	for name := range parsed.Query() {
+		existing = append(existing, name)
 	}
 
-	sort.Strings(names)
+	sort.Strings(existing)
+
+	canonical := corpus.RedirectParams()
+
+	for _, group := range [][]string{existing, canonical} {
+		for _, name := range group {
+			if _, dup := seen[name]; dup {
+				continue
+			}
+
+			seen[name] = struct{}{}
+
+			names = append(names, name)
+		}
+	}
 
 	out := make([]string, 0, len(names))
 
