@@ -79,37 +79,54 @@ func (c *Confirmer) confirmOne(ctx context.Context, f model.Finding) (model.Find
 		return f, stateSkipped, nil
 	}
 
-	target, ok := ProbeFor(f, c.opts.Canary)
-	if !ok {
+	targets := ProbesFor(f, c.opts.Canary)
+	if len(targets) == 0 {
 		return f, stateSkipped, nil
 	}
 
-	result, visitErr := c.Visit(ctx, target)
-	if visitErr != nil {
+	// Usually one target. More than one means the parameter name was
+	// guessed, not traced; the first guess that actually navigates wins,
+	// and a guess that does not is not failure, just evidence this was not
+	// the one.
+	var lastErr error
+
+	for _, target := range targets {
+		result, visitErr := c.Visit(ctx, target)
+		if visitErr != nil {
+			lastErr = visitErr
+
+			continue
+		}
+
+		if !result.Confirmed {
+			continue
+		}
+
+		// A finding the browser proved is still proved when its screenshot
+		// cannot be written. Returning the error here aborted the whole run
+		// and discarded every finding already confirmed, which is the
+		// opposite of this method's contract: a finding is only ever
+		// promoted, never dropped.
+		written, err := c.writeArtifacts(f, result)
+		if err != nil {
+			f = noteFailure(f, fmt.Errorf("writing artifacts: %w", err))
+		}
+
+		f.Artifacts = written
+
+		return promote(f, result), stateConfirmed, nil
+	}
+
+	if lastErr != nil {
 		// A visit that failed leaves the finding exactly as it was, and the
 		// pass continues. One page that will not load must not sink a run,
 		// and it is not evidence about the finding either way.
-		return noteFailure(f, visitErr), stateFailed, nil
+		return noteFailure(f, lastErr), stateFailed, nil
 	}
 
-	if !result.Confirmed {
-		f.Evidence = append(f.Evidence, "browser: no navigation to the canary observed")
+	f.Evidence = append(f.Evidence, "browser: no navigation to the canary observed")
 
-		return f, stateAttempted, nil
-	}
-
-	// A finding the browser proved is still proved when its screenshot cannot
-	// be written. Returning the error here aborted the whole run and discarded
-	// every finding already confirmed, which is the opposite of this method's
-	// contract: a finding is only ever promoted, never dropped.
-	written, err := c.writeArtifacts(f, result)
-	if err != nil {
-		f = noteFailure(f, fmt.Errorf("writing artifacts: %w", err))
-	}
-
-	f.Artifacts = written
-
-	return promote(f, result), stateConfirmed, nil
+	return f, stateAttempted, nil
 }
 
 // noteFailure records that a visit did not happen, without changing the

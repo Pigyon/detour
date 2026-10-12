@@ -58,6 +58,27 @@ func TestConfirmPromotesClientSideCandidates(t *testing.T) {
 	}
 }
 
+// TestConfirmGuessesAnUnresolvedParamFromTheSourceURL is the case the JS
+// stage leaves stuck: a sink whose input the static tracer could not name,
+// so ParamName is empty. Confirm still has something to try: the query
+// parameter the source URL already carries.
+func TestConfirmGuessesAnUnresolvedParamFromTheSourceURL(t *testing.T) {
+	t.Parallel()
+	requireChrome(t)
+
+	srv := labServer(t)
+	c := newConfirmer(t, scope.New(testCanary))
+
+	f := candidate("OR-C01", srv.URL+"/c01?backUrl=placeholder", "", "https://{{canary}}/x")
+
+	promoted, summary, err := c.Confirm(context.Background(), []model.Finding{f})
+	require.NoError(t, err)
+	require.Len(t, promoted, 1)
+	assert.Equal(t, 1, summary.Confirmed)
+	assert.Equal(t, model.VerdictConfirmed, promoted[0].Verdict)
+	assert.True(t, promoted[0].Capabilities.BrowserConfirmed)
+}
+
 // TestConfirmLeavesUnprovenCandidatesAlone pins the honesty rule in the other
 // direction: a browser that does not reproduce something is not proof the
 // finding was wrong.
