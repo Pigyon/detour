@@ -146,6 +146,8 @@ const flagScopeFile = "--scope-file"
 
 const cmdScope = "scope"
 
+const flagOut = "--out"
+
 func confirmArgs(extra ...string) []string {
 	return append([]string{flagRate, "50", "confirm"}, extra...)
 }

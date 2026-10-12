@@ -95,7 +95,7 @@ func TestScopeImportWritesAScopeFile(t *testing.T) {
 	cmd.SetOut(new(bytes.Buffer))
 	errOut := new(bytes.Buffer)
 	cmd.SetErr(errOut)
-	cmd.SetArgs([]string{cmdScope, "import", "--hackerone", "acme", "--username", "nedlir", "--out", scopePath})
+	cmd.SetArgs([]string{cmdScope, "import", "--hackerone", "acme", "--username", "nedlir", flagOut, scopePath})
 
 	require.NoError(t, cmd.Execute())
 	assert.Contains(t, errOut.String(), "2 assets written")

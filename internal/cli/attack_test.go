@@ -80,7 +80,7 @@ func TestAttackCommandFilterAndOut(t *testing.T) {
 
 	cmd.SetOut(out)
 	cmd.SetErr(errOut)
-	cmd.SetArgs(attackArgs("--filter", "header", "--out", outDir, list))
+	cmd.SetArgs(attackArgs("--filter", "header", flagOut, outDir, list))
 
 	require.NoError(t, cmd.Execute())
 	assert.Contains(t, out.String(), `"OR-D01"`)
@@ -151,7 +151,7 @@ func TestAttackCommandWritesOpaqueEnvelopeBreakdown(t *testing.T) {
 	cmd := cli.NewRoot()
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
-	cmd.SetArgs(attackArgs("--out", dir, list))
+	cmd.SetArgs(attackArgs(flagOut, dir, list))
 
 	require.NoError(t, cmd.Execute())
 
@@ -178,7 +178,7 @@ func TestAttackCommandReportsDiffOnRerun(t *testing.T) {
 
 		cmd.SetOut(out)
 		cmd.SetErr(errOut)
-		cmd.SetArgs(attackArgs("--out", dir, list))
+		cmd.SetArgs(attackArgs(flagOut, dir, list))
 		require.NoError(t, cmd.Execute())
 
 		return errOut.String()
@@ -236,4 +236,49 @@ func TestAttackCommandRespectsBudget(t *testing.T) {
 
 func attackArgs(extra ...string) []string {
 	return append([]string{flagRate, "50", "attack"}, extra...)
+}
+
+// TestAttackCommandBudgetExpandResumesAndFinishes proves --budget-expand runs
+// under the first budget, is cut, then resumes under the next and finishes,
+// keeping the findings the first round proved rather than losing them.
+func TestAttackCommandBudgetExpandResumesAndFinishes(t *testing.T) {
+	t.Parallel()
+
+	const perRequest = 120 * time.Millisecond
+
+	labHandler := lab.New().Handler()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(perRequest)
+		labHandler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	urls := make([]string, 5)
+	for i := range urls {
+		urls[i] = fmt.Sprintf("%s/a01?url=https://allowed.lab/%d", srv.URL, i)
+	}
+
+	list := filepath.Join(t.TempDir(), "urls.txt")
+	require.NoError(t, os.WriteFile(list, []byte(strings.Join(urls, "\n")+"\n"), 0o600))
+
+	outDir := t.TempDir()
+
+	cmd := cli.NewRoot()
+	out := new(bytes.Buffer)
+	errOut := new(bytes.Buffer)
+
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+	// Concurrency 1 serializes the requests so the tiny first round cannot
+	// finish and must be resumed under the generous second one.
+	cmd.SetArgs([]string{
+		flagRate, "50", "--concurrency", "1", "--budget-expand", "200ms,30s",
+		flagOut, outDir, "attack", list,
+	})
+
+	require.NoError(t, cmd.Execute(), "a resumed budget run must exit clean")
+	assert.Contains(t, errOut.String(), "resuming with more time",
+		"the first budget round must be cut and resumed")
+	assert.Contains(t, out.String(), `"technique_id"`,
+		"findings proved before the resume must survive into the final report")
 }

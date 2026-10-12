@@ -73,7 +73,9 @@ func NewRoot() *cobra.Command {
 			// ctx.Err() stops and reports what it proved rather than losing
 			// the whole scan. The cancel func is released in
 			// PersistentPostRunE, after RunE has had the whole run to use it.
-			if cfg.Budget > 0 {
+			// --budget-expand owns its own per-round timeouts, so the single
+			// budget timeout is skipped when it is set.
+			if cfg.Budget > 0 && cfg.BudgetExpand == "" {
 				//nolint:gosec // G118: cancelBudget is called in PersistentPostRunE, not discarded
 				ctx, cancelBudget = context.WithTimeout(ctx, cfg.Budget)
 			}
@@ -135,6 +137,9 @@ func registerPersistentFlags(root *cobra.Command) {
 	fs.Duration("timeout", 10*time.Second, "per-request timeout")
 	fs.Duration("budget", 0,
 		"stop the whole run after this long and report what was proved so far (0 means unlimited)")
+	fs.String("budget-expand", "",
+		"comma-separated budgets (for example 30m,1h,2h): resume under the next each time a run is cut, "+
+			"until it finishes within one; takes precedence over --budget")
 	fs.Duration("session-refresh", 0,
 		"re-read --cookies-file and --headers-file (running --creds-refresh-cmd first) on this interval to keep a short-lived session fresh (0 disables)")
 	fs.String("headers-file", "",
