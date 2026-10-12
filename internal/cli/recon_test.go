@@ -153,7 +153,7 @@ func TestPipelineEndToEnd(t *testing.T) {
 		flagRate, "200",
 		flagScopeFile, scopeFile(t, "127.0.0.1"),
 		"--crawl=false",
-		"--out", dir,
+		flagOut, dir,
 		srv.URL + "/a01?url=https://allowed.lab/",
 	})
 
@@ -183,7 +183,7 @@ func TestPipelineResumesByDefault(t *testing.T) {
 		flagRate, "200",
 		flagScopeFile, scopeFile(t, "127.0.0.1"),
 		"--crawl=false",
-		"--out", dir,
+		flagOut, dir,
 		target,
 	})
 

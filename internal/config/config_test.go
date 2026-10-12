@@ -240,3 +240,36 @@ func TestUnmarshalAcceptsUsableDestinations(t *testing.T) {
 		})
 	}
 }
+
+func TestBudgetRounds(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   string
+		want []time.Duration
+		err  bool
+	}{
+		{name: "empty yields no rounds", in: "", want: nil},
+		{name: "single", in: "30m", want: []time.Duration{30 * time.Minute}},
+		{name: "several", in: "30m,1h,2h", want: []time.Duration{30 * time.Minute, time.Hour, 2 * time.Hour}},
+		{name: "spaces and blanks", in: " 30m , , 1h ", want: []time.Duration{30 * time.Minute, time.Hour}},
+		{name: "invalid entry", in: "30m,nope", err: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := config.Config{BudgetExpand: tc.in}.BudgetRounds()
+			if tc.err {
+				require.Error(t, err)
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}

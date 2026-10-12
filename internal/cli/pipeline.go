@@ -165,7 +165,7 @@ func runPipeline(cmd *cobra.Command, target string, flags *reconFlags, headless 
 	// endpoints those are.
 	eng.SetChainTargets(attack.ChainTargetsFrom(urls))
 
-	findings, err := eng.Run(ctx, urls)
+	findings, err := runEngineWithBudgets(ctx, cmd, eng, urls, cfg)
 	if err != nil && !noteStopped(cmd, err) {
 		return err
 	}

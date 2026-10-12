@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/nedlir/detour/internal/adapter"
@@ -124,14 +126,14 @@ func runAttack(cmd *cobra.Command, source string, opts attackOptions) error {
 	// endpoints those are.
 	eng.SetChainTargets(attack.ChainTargetsFrom(urls))
 
-	closer, err := attachCheckpoint(eng, opts.resume)
+	closer, err := attachCheckpoint(eng, resolveResume(opts, source, cfg))
 	if err != nil {
 		return err
 	}
 
 	defer closer()
 
-	findings, err := eng.Run(ctx, urls)
+	findings, err := runEngineWithBudgets(ctx, cmd, eng, urls, cfg)
 	if err != nil && !noteStopped(cmd, err) {
 		return err
 	}
@@ -143,6 +145,89 @@ func runAttack(cmd *cobra.Command, source string, opts attackOptions) error {
 	findings = maybeEscalate(findings, opts.escalate)
 
 	return writeAttackOutput(cmd, findings, allow, opts.outDir, eng.Coverage().OpaqueEnvelopes)
+}
+
+// runEngineWithBudgets runs the attack engine, honoring --budget-expand: each
+// time a round's budget cuts the run short it resumes under the next budget
+// (the checkpoint re-emits what was already proved, so findings accumulate
+// rather than reset), until a round finishes within its budget or the list is
+// exhausted. With no --budget-expand it runs once under ctx, where the single
+// --budget or no limit already applies.
+func runEngineWithBudgets(
+	ctx context.Context,
+	cmd *cobra.Command,
+	eng *attack.Engine,
+	urls []string,
+	cfg config.Config,
+) ([]model.Finding, error) {
+	rounds, err := cfg.BudgetRounds()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(rounds) == 0 {
+		return eng.Run(ctx, urls)
+	}
+
+	var findings []model.Finding
+
+	for round, budget := range rounds {
+		roundCtx := ctx
+		cancel := context.CancelFunc(func() {})
+
+		if budget > 0 {
+			roundCtx, cancel = context.WithTimeout(ctx, budget)
+		}
+
+		got, runErr := eng.Run(roundCtx, urls)
+
+		cancel()
+
+		if got != nil {
+			findings = got
+		}
+
+		// Only a round that ran out its own budget advances to the next one. A
+		// clean finish, a real error, or the parent context being cancelled
+		// (Ctrl-C, a lost session) all end the loop here.
+		if !errors.Is(runErr, context.DeadlineExceeded) || ctx.Err() != nil {
+			return findings, runErr
+		}
+
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+			"budget round %d of %d (%s) ran out, resuming with more time\n", round+1, len(rounds), budget)
+	}
+
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+		"all %d budget rounds used; reporting what was proved so far\n", len(rounds))
+
+	return findings, nil
+}
+
+// resolveResume picks the checkpoint path: the operator's --resume when given,
+// otherwise a default one when --budget-expand is set, since resuming across
+// rounds needs a checkpoint to carry what each round proved.
+func resolveResume(opts attackOptions, source string, cfg config.Config) string {
+	if opts.resume != "" {
+		return opts.resume
+	}
+
+	if cfg.BudgetExpand != "" {
+		return budgetResumePath(source, opts.outDir)
+	}
+
+	return ""
+}
+
+// budgetResumePath picks a checkpoint path for --budget-expand when the
+// operator gave no --resume: under --out when there is one, otherwise a
+// per-source file in the temp directory.
+func budgetResumePath(source, outDir string) string {
+	if outDir != "" {
+		return filepath.Join(outDir, "resume.ndjson")
+	}
+
+	return filepath.Join(os.TempDir(), "detour-resume-"+slugify(source)+".ndjson")
 }
 
 func attachCheckpoint(eng *attack.Engine, resume string) (func(), error) {

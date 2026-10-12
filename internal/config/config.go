@@ -59,6 +59,12 @@ type Config struct {
 	// that expires is treated the same as Ctrl-C: the run stops and reports
 	// what it already proved, rather than losing the whole scan.
 	Budget time.Duration `mapstructure:"budget"`
+	// BudgetExpand is a comma-separated list of budgets ("30m,1h,2h"). The run
+	// executes under the first, and each time it is cut short it resumes under
+	// the next, until it finishes within one or the list is exhausted. Empty
+	// means the single --budget (or no limit) applies. It takes precedence over
+	// --budget when set.
+	BudgetExpand string `mapstructure:"budget-expand"`
 	// SessionRefresh re-reads CookiesFile and HeadersFile on this interval,
 	// and runs CredsRefreshCmd first when set, so a short-lived session stays
 	// valid across a long run. Zero disables it. The files are expected to be
@@ -258,4 +264,34 @@ func hostOnly(raw string) (string, error) {
 	}
 
 	return host, nil
+}
+
+// BudgetRounds parses BudgetExpand into the ordered list of per-round budgets.
+// Each entry is a Go duration; a zero or negative entry means that round runs
+// with no limit. An empty BudgetExpand yields no rounds, leaving the single
+// --budget in charge.
+func (c Config) BudgetRounds() ([]time.Duration, error) {
+	raw := strings.TrimSpace(c.BudgetExpand)
+	if raw == "" {
+		return nil, nil
+	}
+
+	parts := strings.Split(raw, ",")
+	rounds := make([]time.Duration, 0, len(parts))
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		d, err := time.ParseDuration(part)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --budget-expand entry %q: %w", part, err)
+		}
+
+		rounds = append(rounds, d)
+	}
+
+	return rounds, nil
 }
