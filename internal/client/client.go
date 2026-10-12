@@ -69,11 +69,22 @@ type Client struct {
 	transport http.RoundTripper
 	guard     *scope.Guard
 	extra     http.Header
-	cookies   []*http.Cookie
-	rate      rate.Limit
-	delay     time.Duration
-	timeout   time.Duration
-	limiters  sync.Map
+	// creds is the live cookie set, swappable by a background refresh.
+	creds *credentials
+	// inline is the --cookie half of the jar, preserved across every reload
+	// of the file-backed half.
+	inline []*http.Cookie
+	// cookiesFile, refresh, and the auth-check fields drive keeping a
+	// short-lived session fresh and noticing when it dies. See auth_watch.go.
+	cookiesFile  string
+	refresh      time.Duration
+	authCheck    string
+	authExpect   string
+	authRequired bool
+	rate         rate.Limit
+	delay        time.Duration
+	timeout      time.Duration
+	limiters     sync.Map
 	// inFlight bounds how many requests are on the wire at once.
 	//
 	// The bound belongs here rather than in a worker pool, because this is the
@@ -101,6 +112,8 @@ func New(cfg config.Config, guard *scope.Guard) (*Client, error) {
 		return nil, err
 	}
 
+	inline := parseCookieHeader(cfg.Cookie)
+
 	transport, err := newTransport(cfg.Proxy)
 	if err != nil {
 		return nil, err
@@ -112,13 +125,19 @@ func New(cfg config.Config, guard *scope.Guard) (*Client, error) {
 	}
 
 	return &Client{
-		transport: transport,
-		timeout:   cfg.Timeout,
-		guard:     guard,
-		extra:     headers,
-		cookies:   cookies,
-		rate:      limit,
-		delay:     cfg.Delay,
+		transport:    transport,
+		timeout:      cfg.Timeout,
+		guard:        guard,
+		extra:        headers,
+		creds:        &credentials{cookies: cookies},
+		inline:       inline,
+		cookiesFile:  cfg.CookiesFile,
+		refresh:      cfg.CookiesRefresh,
+		authCheck:    cfg.AuthCheck,
+		authExpect:   cfg.AuthCheckExpect,
+		authRequired: cfg.AuthCheckRequired,
+		rate:         limit,
+		delay:        cfg.Delay,
 	}, nil
 }
 
@@ -156,7 +175,7 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 		return nil, err
 	}
 
-	applyCredentials(req, c.extra, c.cookies)
+	applyCredentials(req, c.extra, c.creds.snapshot())
 
 	// The rate wait happens before the in-flight slot is taken, not after. A
 	// goroutine blocked on a collapsed host's limiter is not a request on the

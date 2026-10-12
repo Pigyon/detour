@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,6 +61,21 @@ func runPipeline(cmd *cobra.Command, target string, flags *reconFlags, headless 
 		return err
 	}
 
+	// Verified before recon, the expensive part: a run that must be
+	// authenticated should fail at once rather than surface, crawl, and attack
+	// the target anonymously.
+	if err := c.VerifyAuth(cmd.Context()); err != nil {
+		return err
+	}
+
+	// A lost session cancels the attack the same way a budget or Ctrl-C does.
+	// The watcher also re-reads the cookies file on its interval, which keeps
+	// every stage sharing this client authenticated.
+	ctx, stop := context.WithCancel(cmd.Context())
+	defer stop()
+
+	c.WatchAuth(ctx, stop)
+
 	urls := pipelineURLs(cmd, cfg, c, target, flags)
 	if len(urls) == 0 {
 		return errors.New("nothing to attack: no injection points survived selection")
@@ -103,7 +119,7 @@ func runPipeline(cmd *cobra.Command, target string, flags *reconFlags, headless 
 	// endpoints those are.
 	eng.SetChainTargets(attack.ChainTargetsFrom(urls))
 
-	findings, err := eng.Run(cmd.Context(), urls)
+	findings, err := eng.Run(ctx, urls)
 	if err != nil && !noteStopped(cmd, err) {
 		return err
 	}
