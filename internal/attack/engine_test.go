@@ -329,3 +329,39 @@ func TestCoverageRecordsRedirectorURLs(t *testing.T) {
 	require.Len(t, cov.RedirectorURLs, 1)
 	assert.Equal(t, redirector.URL+"/", cov.RedirectorURLs[0])
 }
+
+// TestCoverageRecordsOpaqueEnvelopesEvenWithoutAConfirmedBypass proves a
+// blob that resists both bypass strategies is still visible afterward: a
+// run that only ever reported confirmed bypasses made this look identical
+// to no envelope having been there at all.
+func TestCoverageRecordsOpaqueEnvelopesEvenWithoutAConfirmedBypass(t *testing.T) {
+	t.Parallel()
+
+	// A server that never acts on the destination inside the envelope: every
+	// bypass strategy sends a different value, and every one gets the exact
+	// same plain response back, so none can ever find a canary hit.
+	unresponsive := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(unresponsive.Close)
+
+	cfg := config.Config{Canary: testCanary, Rate: 100, Concurrency: 4, Timeout: 3 * time.Second}
+	guard := scope.New(cfg.Canary)
+	c, err := client.New(cfg, guard)
+	require.NoError(t, err)
+
+	eng := attack.New(c, cfg.Canary, "", cfg.Concurrency, nil)
+
+	blob, err := lab.EncodeClick("https://" + lab.AllowedHost + "/home")
+	require.NoError(t, err)
+
+	target := unresponsive.URL + "/track/click2/" + blob + ".html"
+
+	findings, err := eng.Run(context.Background(), []string{target})
+	require.NoError(t, err)
+	assert.Empty(t, findings, "an endpoint that never acts on the envelope must produce no finding")
+
+	cov := eng.Coverage()
+	assert.Contains(t, cov.OpaqueEnvelopes, target,
+		"the envelope must be visible even though no bypass was confirmed")
+}

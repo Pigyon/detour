@@ -178,6 +178,10 @@ func reportCoverage(cmd *cobra.Command, c attack.Coverage) {
 	for _, u := range c.RedirectorURLs {
 		slog.Debug("already redirects", "url", u)
 	}
+
+	for _, u := range c.OpaqueEnvelopes {
+		slog.Debug("opaque envelope found, no automatic bypass confirmed; see detour decode", "url", u)
+	}
 }
 
 func writeAttackOutput(cmd *cobra.Command, findings []model.Finding, allow map[string]struct{}, outDir string) error {
