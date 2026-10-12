@@ -239,6 +239,21 @@ func TestWriteEmptyDirRejected(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestWriteWithZeroFindingsStillWritesTheManifest is a regression test: a
+// clean run that confirms nothing never enters writeFindingReports's loop,
+// which used to be the only thing that created the findings directory. The
+// manifest write that follows it had nowhere to go.
+func TestWriteWithZeroFindingsStillWritesTheManifest(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	require.NoError(t, report.Write(dir, nil))
+
+	manifest := readOut(t, dir, filepath.Join("findings", "MANIFEST.json"))
+	assert.Contains(t, manifest, `"findings": []`)
+}
+
 // TestFindingsJSONCarriesRootCause keeps the machine format useful: a reader
 // needs to know which defect a finding belongs to without re-deriving it.
 func TestFindingsJSONCarriesRootCause(t *testing.T) {
