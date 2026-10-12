@@ -4,13 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 )
 
-// Fetcher retrieves a URL's body. The CLI supplies one backed by the scoped
-// HTTP client, so the scope guard governs every request this package causes.
+// Fetcher retrieves a URL's body and response headers. The CLI supplies one
+// backed by the scoped HTTP client, so the scope guard governs every
+// request this package causes.
+//
+// Headers matter for exactly one thing right now: Cross-Origin-Opener-Policy
+// on the page itself can sever window.opener regardless of what its markup
+// links to, which a tabnabbing finding (OR-F09) has to account for or it
+// reports a risk the browser already blocks.
 type Fetcher interface {
-	Get(ctx context.Context, rawURL string) ([]byte, error)
+	Get(ctx context.Context, rawURL string) ([]byte, http.Header, error)
 }
 
 // PageReport is a whole page: its markup findings, every script it pulls in,
@@ -36,7 +43,7 @@ type sourceMap struct {
 // scripts prefer their published source map: original sources carry the guard
 // names and structure a minified bundle has thrown away.
 func CollectPage(ctx context.Context, f Fetcher, pageURL string) (PageReport, error) {
-	body, err := f.Get(ctx, pageURL)
+	body, headers, err := f.Get(ctx, pageURL)
 	if err != nil {
 		return PageReport{}, fmt.Errorf("fetching %s: %w", pageURL, err)
 	}
@@ -46,11 +53,13 @@ func CollectPage(ctx context.Context, f Fetcher, pageURL string) (PageReport, er
 		return PageReport{}, err
 	}
 
+	verdicts := mitigateTabnabbing(doc.Verdicts, headers)
+
 	report := PageReport{
 		URL:      pageURL,
 		Document: doc,
 		Scripts:  []Report{},
-		Verdicts: append([]Verdict{}, doc.Verdicts...),
+		Verdicts: append([]Verdict{}, verdicts...),
 		Errors:   []string{},
 	}
 
@@ -64,6 +73,34 @@ func CollectPage(ctx context.Context, f Fetcher, pageURL string) (PageReport, er
 	}
 
 	return report, nil
+}
+
+// mitigateTabnabbing demotes an OR-F09 verdict when the page's own response
+// already carries the one header that severs window.opener regardless of
+// what its markup links to.
+//
+// Cross-Origin-Opener-Policy: same-origin is the only value treated as
+// severing here. same-origin-allow-popups still lets some opener access
+// through in parts of the spec, so claiming it mitigates the finding would
+// overstate what is actually blocked.
+func mitigateTabnabbing(verdicts []Verdict, headers http.Header) []Verdict {
+	coop := strings.ToLower(strings.TrimSpace(headers.Get("Cross-Origin-Opener-Policy")))
+	if coop != "same-origin" {
+		return verdicts
+	}
+
+	out := make([]Verdict, len(verdicts))
+
+	for i, v := range verdicts {
+		if v.TechniqueID == "OR-F09" {
+			v.Severity = SeverityInfo
+			v.Evidence = append(v.Evidence, "mitigated: page sends Cross-Origin-Opener-Policy: same-origin")
+		}
+
+		out[i] = v
+	}
+
+	return out
 }
 
 func (p *PageReport) add(reports []Report, errs []string) {
@@ -87,7 +124,7 @@ func collectScript(ctx context.Context, f Fetcher, pageURL string, script Script
 		return []Report{r}, nil
 	}
 
-	code, err := f.Get(ctx, script.Src)
+	code, _, err := f.Get(ctx, script.Src)
 	if err != nil {
 		return nil, []string{fmt.Sprintf("fetching %s: %v", script.Src, err)}
 	}
@@ -107,7 +144,7 @@ func collectScript(ctx context.Context, f Fetcher, pageURL string, script Script
 // fromSourceMap analyzes the original sources a bundle publishes alongside it.
 // A missing or contentless map is not an error, just an absent shortcut.
 func fromSourceMap(ctx context.Context, f Fetcher, scriptURL string) ([]Report, bool) {
-	raw, err := f.Get(ctx, scriptURL+".map")
+	raw, _, err := f.Get(ctx, scriptURL+".map")
 	if err != nil {
 		return nil, false
 	}
