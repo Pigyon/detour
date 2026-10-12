@@ -142,6 +142,10 @@ func TestAttackHeadlessDegradesWithoutChrome(t *testing.T) {
 // flagRate keeps the CLI tests from throttling against the in-process lab.
 const flagRate = "--rate"
 
+const flagScopeFile = "--scope-file"
+
+const cmdScope = "scope"
+
 func confirmArgs(extra ...string) []string {
 	return append([]string{flagRate, "50", "confirm"}, extra...)
 }
