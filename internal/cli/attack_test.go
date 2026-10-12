@@ -124,6 +124,41 @@ func TestAttackCommandResume(t *testing.T) {
 	assert.Equal(t, first, run())
 }
 
+// TestAttackCommandReportsDiffOnRerun proves a second run into the same
+// --out says what changed, and a first run says nothing (there is nothing
+// to diff against yet).
+func TestAttackCommandReportsDiffOnRerun(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(lab.New().Handler())
+	t.Cleanup(srv.Close)
+
+	list := filepath.Join(t.TempDir(), "urls.txt")
+	require.NoError(t, os.WriteFile(list, []byte(srv.URL+"/a01?url=https://allowed.lab/\n"), 0o600))
+
+	dir := t.TempDir()
+
+	run := func() string {
+		cmd := cli.NewRoot()
+		out := new(bytes.Buffer)
+		errOut := new(bytes.Buffer)
+
+		cmd.SetOut(out)
+		cmd.SetErr(errOut)
+		cmd.SetArgs(attackArgs("--out", dir, list))
+		require.NoError(t, cmd.Execute())
+
+		return errOut.String()
+	}
+
+	first := run()
+	assert.NotContains(t, first, "since the last run",
+		"a first run has nothing to diff against yet")
+
+	second := run()
+	assert.Contains(t, second, "since the last run into this directory")
+}
+
 // TestAttackCommandRespectsBudget proves --budget stops a run before it
 // would otherwise finish, and still exits clean rather than erroring.
 func TestAttackCommandRespectsBudget(t *testing.T) {

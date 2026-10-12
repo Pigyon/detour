@@ -201,7 +201,27 @@ func writeAttackOutput(cmd *cobra.Command, findings []model.Finding, allow map[s
 		return nil
 	}
 
-	return report.WriteVersion(outDir, findings, version)
+	diff, err := report.WriteVersion(outDir, findings, version)
+	if err != nil {
+		return err
+	}
+
+	reportDiff(cmd, diff)
+
+	return nil
+}
+
+// reportDiff says what changed since a previous run into the same --out,
+// when there was one. Silent on a first run (nothing pre-existed to diff
+// against): a diff against nothing is not information.
+func reportDiff(cmd *cobra.Command, diff report.Diff) {
+	if len(diff.Unchanged) == 0 && len(diff.Stale) == 0 {
+		return
+	}
+
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+		"since the last run into this directory: %d new, %d unchanged, %d no longer reproduced\n",
+		len(diff.New), len(diff.Unchanged), len(diff.Stale))
 }
 
 // suggestSeverities fills in every finding's suggested CVSS score. It runs

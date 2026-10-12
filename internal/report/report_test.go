@@ -149,6 +149,42 @@ func TestWriteManifestListsCurrentFindings(t *testing.T) {
 	assert.Contains(t, manifest, report.Fingerprint(f))
 }
 
+// TestWriteVersionReportsDiff proves the returned Diff distinguishes a first
+// run (everything new, nothing to compare against) from a rerun that drops
+// one finding and keeps another.
+func TestWriteVersionReportsDiff(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	keep := model.NewFinding()
+	keep.TechniqueID = techA01
+	keep.Mechanism = mechQuery
+	keep.Payload = canaryPayload
+	keep.Candidate.SourceURL = "https://app.example/keep?url=https://allowed.lab/"
+	keep.Capabilities.InputControlled = true
+	keep.Evidence = []string{statusLine}
+
+	drop := model.NewFinding()
+	drop.TechniqueID = "OR-A02"
+	drop.Mechanism = mechQuery
+	drop.Payload = canaryPayload
+	drop.Candidate.SourceURL = "https://app.example/drop?url=https://allowed.lab/"
+	drop.Capabilities.InputControlled = true
+	drop.Evidence = []string{statusLine}
+
+	first, err := report.WriteVersion(dir, []model.Finding{keep, drop}, "test")
+	require.NoError(t, err)
+	assert.Empty(t, first.Unchanged, "a first run has nothing pre-existing to diff against")
+	assert.Empty(t, first.Stale)
+	assert.Len(t, first.New, 2)
+
+	second, err := report.WriteVersion(dir, []model.Finding{keep}, "test")
+	require.NoError(t, err)
+	assert.Empty(t, second.New, "the rerun produced nothing it had not already produced")
+	assert.Len(t, second.Unchanged, 1)
+	assert.Len(t, second.Stale, 1)
+}
+
 // TestWriteMarksDirectoriesStaleWhenNotReproduced proves a rerun that no
 // longer finds something flags the old directory rather than deleting or
 // silently ignoring it.
@@ -214,7 +250,8 @@ func TestFindingsJSONCarriesRootCause(t *testing.T) {
 	f.Candidate.ParamName = paramURL
 
 	dir := t.TempDir()
-	require.NoError(t, report.WriteVersion(dir, []model.Finding{f}, "test"))
+	_, err := report.WriteVersion(dir, []model.Finding{f}, "test")
+	require.NoError(t, err)
 
 	raw, err := os.ReadFile(filepath.Join(dir, "findings.json")) //nolint:gosec // G304: dir is t.TempDir().
 	require.NoError(t, err)
