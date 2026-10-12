@@ -68,23 +68,27 @@ var ErrHostGivenUp = errors.New("client: host gave up after sustained pushback a
 type Client struct {
 	transport http.RoundTripper
 	guard     *scope.Guard
-	extra     http.Header
-	// creds is the live cookie set, swappable by a background refresh.
+	// creds is the live header and cookie set, swappable by a background
+	// refresh while requests are in flight.
 	creds *credentials
-	// inline is the --cookie half of the jar, preserved across every reload
-	// of the file-backed half.
-	inline []*http.Cookie
-	// cookiesFile, refresh, and the auth-check fields drive keeping a
-	// short-lived session fresh and noticing when it dies. See auth_watch.go.
-	cookiesFile  string
-	refresh      time.Duration
-	authCheck    string
-	authExpect   string
-	authRequired bool
-	rate         rate.Limit
-	delay        time.Duration
-	timeout      time.Duration
-	limiters     sync.Map
+	// inline and inlineHeaders are the --cookie and --header halves, preserved
+	// across every reload of the file-backed halves.
+	inline        []*http.Cookie
+	inlineHeaders http.Header
+	// cookiesFile, headersFile, refresh, credsRefreshCmd, and the auth-check
+	// fields drive keeping a short-lived session fresh and noticing when it
+	// dies. See auth_watch.go.
+	cookiesFile     string
+	headersFile     string
+	refresh         time.Duration
+	credsRefreshCmd string
+	authCheck       string
+	authExpect      string
+	authRequired    bool
+	rate            rate.Limit
+	delay           time.Duration
+	timeout         time.Duration
+	limiters        sync.Map
 	// inFlight bounds how many requests are on the wire at once.
 	//
 	// The bound belongs here rather than in a worker pool, because this is the
@@ -102,17 +106,10 @@ func New(cfg config.Config, guard *scope.Guard) (*Client, error) {
 		return nil, errors.New("nil scope guard")
 	}
 
-	headers, err := config.ParseHeaders(cfg.Headers)
+	inlineHeaders, err := config.ParseHeaders(cfg.Headers)
 	if err != nil {
 		return nil, err
 	}
-
-	cookies, err := loadCookies(cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	inline := parseCookieHeader(cfg.Cookie)
 
 	transport, err := newTransport(cfg.Proxy)
 	if err != nil {
@@ -124,21 +121,32 @@ func New(cfg config.Config, guard *scope.Guard) (*Client, error) {
 		limit = rate.Limit(5)
 	}
 
-	return &Client{
-		transport:    transport,
-		timeout:      cfg.Timeout,
-		guard:        guard,
-		extra:        headers,
-		creds:        &credentials{cookies: cookies},
-		inline:       inline,
-		cookiesFile:  cfg.CookiesFile,
-		refresh:      cfg.CookiesRefresh,
-		authCheck:    cfg.AuthCheck,
-		authExpect:   cfg.AuthCheckExpect,
-		authRequired: cfg.AuthCheckRequired,
-		rate:         limit,
-		delay:        cfg.Delay,
-	}, nil
+	c := &Client{
+		transport:       transport,
+		timeout:         cfg.Timeout,
+		guard:           guard,
+		creds:           &credentials{},
+		inline:          parseCookieHeader(cfg.Cookie),
+		inlineHeaders:   inlineHeaders,
+		cookiesFile:     cfg.CookiesFile,
+		headersFile:     cfg.HeadersFile,
+		refresh:         cfg.SessionRefresh,
+		credsRefreshCmd: cfg.CredsRefreshCmd,
+		authCheck:       cfg.AuthCheck,
+		authExpect:      cfg.AuthCheckExpect,
+		authRequired:    cfg.AuthCheckRequired,
+		rate:            limit,
+		delay:           cfg.Delay,
+	}
+
+	// The initial credential set comes from the same reload path the refresh
+	// uses, so a bad --cookies-file or --headers-file is caught here at startup
+	// rather than silently on the first refresh tick.
+	if err := c.reloadCredentials(); err != nil {
+		return nil, err
+	}
+
+	return c, nil
 }
 
 func newTransport(proxy string) (*http.Transport, error) {
@@ -175,7 +183,8 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 		return nil, err
 	}
 
-	applyCredentials(req, c.extra, c.creds.snapshot())
+	headers, cookies := c.creds.snapshot()
+	applyCredentials(req, headers, cookies)
 
 	// The rate wait happens before the in-flight slot is taken, not after. A
 	// goroutine blocked on a collapsed host's limiter is not a request on the

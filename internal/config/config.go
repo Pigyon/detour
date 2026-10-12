@@ -59,12 +59,21 @@ type Config struct {
 	// that expires is treated the same as Ctrl-C: the run stops and reports
 	// what it already proved, rather than losing the whole scan.
 	Budget time.Duration `mapstructure:"budget"`
-	// CookiesRefresh re-reads CookiesFile on this interval so a short-lived
-	// session stays valid across a long run. Zero disables it. The file is
-	// expected to be rewritten out of band, for example by re-exporting a
-	// live browser session, so a five-minute bearer or a rotating bot-defense
+	// SessionRefresh re-reads CookiesFile and HeadersFile on this interval,
+	// and runs CredsRefreshCmd first when set, so a short-lived session stays
+	// valid across a long run. Zero disables it. The files are expected to be
+	// rewritten out of band, for example by re-exporting a live browser
+	// session, so a five-minute bearer (in a header) or a rotating bot-defense
 	// cookie does not silently expire mid-scan.
-	CookiesRefresh time.Duration `mapstructure:"cookies-refresh"`
+	SessionRefresh time.Duration `mapstructure:"session-refresh"`
+	// HeadersFile is a file of "Name: Value" header lines, the refreshable
+	// half of the extra headers where a rotating bearer lives.
+	HeadersFile string `mapstructure:"headers-file"`
+	// CredsRefreshCmd is run at the start of each refresh interval to mint
+	// fresh credentials into CookiesFile and HeadersFile before they are
+	// re-read, so detour can keep a bearer that expires in minutes alive on
+	// its own rather than relying on an external re-export.
+	CredsRefreshCmd string `mapstructure:"creds-refresh-cmd"`
 	// AuthCheck is an in-scope URL that returns authenticated-only content.
 	// detour probes it to tell whether the session is still logged in, so an
 	// expired session is reported rather than silently scanned as anonymous.
@@ -99,7 +108,7 @@ func SetDefaults(v *viper.Viper) {
 	v.SetDefault("timeout", defaultTimeout)
 	v.SetDefault("delay", time.Duration(0))
 	v.SetDefault("budget", time.Duration(0))
-	v.SetDefault("cookies-refresh", time.Duration(0))
+	v.SetDefault("session-refresh", time.Duration(0))
 	v.SetDefault("auth-check-required", false)
 }
 

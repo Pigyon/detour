@@ -142,7 +142,7 @@ func TestReloadCookiesRefreshesFileKeepingInline(t *testing.T) {
 		"the live set starts as the inline cookie plus the file")
 
 	writeJar(t, path, "sessnew")
-	require.NoError(t, c.ReloadCookies())
+	require.NoError(t, c.ReloadCredentials())
 
 	assert.ElementsMatch(t, []string{"inline", "sessnew"}, c.LiveCookieNames(),
 		"a reload swaps the file-backed cookie and keeps the inline one")
@@ -167,7 +167,7 @@ func TestWatchAuthStopsRunWhenRequiredSessionLost(t *testing.T) {
 		AuthCheck:         srv.URL + "/me",
 		AuthCheckExpect:   "welcome",
 		AuthCheckRequired: true,
-		CookiesRefresh:    10 * time.Millisecond,
+		SessionRefresh:    10 * time.Millisecond,
 	}
 	c := newTestClient(t, cfg, hostOf(t, srv.URL))
 
@@ -180,4 +180,51 @@ func TestWatchAuthStopsRunWhenRequiredSessionLost(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("watcher never stopped the run on a lost required session")
 	}
+}
+
+const authHeader = "Authorization"
+
+// TestReloadCredentialsRefreshesHeaderFileKeepingInline proves the bearer in
+// --headers-file is re-read while the inline --header is preserved, the
+// header-side mirror of the cookie refresh.
+func TestReloadCredentialsRefreshesHeaderFileKeepingInline(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "hdr.txt")
+	require.NoError(t, os.WriteFile(path, []byte("Authorization: Bearer OLD\n"), 0o600))
+
+	cfg := config.Config{Headers: []string{"X-Static: keep"}, HeadersFile: path}
+	c := newTestClient(t, cfg, "example.test")
+
+	assert.Equal(t, "Bearer OLD", c.LiveHeader(authHeader))
+	assert.Equal(t, "keep", c.LiveHeader("X-Static"))
+
+	require.NoError(t, os.WriteFile(path, []byte("Authorization: Bearer NEW\n"), 0o600))
+	require.NoError(t, c.ReloadCredentials())
+
+	assert.Equal(t, "Bearer NEW", c.LiveHeader(authHeader), "the file-backed header is refreshed")
+	assert.Equal(t, "keep", c.LiveHeader("X-Static"), "the inline --header is preserved")
+}
+
+// TestRefreshCredsRunsCommandThenReloads proves detour can keep a bearer fresh
+// on its own: the refresh command regenerates the headers file and the reload
+// that follows picks up the newly minted value.
+func TestRefreshCredsRunsCommandThenReloads(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "hdr.txt")
+	require.NoError(t, os.WriteFile(path, []byte("Authorization: Bearer OLD\n"), 0o600))
+
+	cfg := config.Config{
+		HeadersFile:     path,
+		CredsRefreshCmd: "printf 'Authorization: Bearer MINTED\\n' > " + path,
+	}
+	c := newTestClient(t, cfg, "example.test")
+
+	assert.Equal(t, "Bearer OLD", c.LiveHeader(authHeader))
+
+	c.RefreshCreds(t.Context())
+
+	assert.Equal(t, "Bearer MINTED", c.LiveHeader(authHeader),
+		"the refresh command regenerates the file and the reload picks it up")
 }
