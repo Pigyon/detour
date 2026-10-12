@@ -3,9 +3,12 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/nedlir/detour/internal/attack"
 	"github.com/nedlir/detour/internal/config"
+	"github.com/nedlir/detour/internal/hackerone"
 	"github.com/nedlir/detour/internal/scope"
 	"github.com/spf13/cobra"
 )
@@ -16,6 +19,75 @@ func newScopeCmd() *cobra.Command {
 		Short: "Inspect the scope guard",
 	}
 	cmd.AddCommand(newScopeTestCmd())
+	cmd.AddCommand(newScopeImportCmd())
+
+	return cmd
+}
+
+// hackeroneTokenEnv is where the operator's own HackerOne API token lives.
+// Never a flag: a flag value sits in shell history and in this process's
+// argv, which any other user on the box can read from /proc.
+const hackeroneTokenEnv = "DETOUR_HACKERONE_TOKEN"
+
+func newScopeImportCmd() *cobra.Command {
+	var (
+		handle   string
+		username string
+		outPath  string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "import",
+		Short: "Build a scope file from a HackerOne program's structured scope",
+		Long: "import reads a program's structured scope through the authenticated hacker API and writes " +
+			"it as a scope file --scope-file already understands: one web asset per line, submittable " +
+			"assets only. The token comes from " + hackeroneTokenEnv + ", never a flag.",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if handle == "" {
+				return errors.New("--hackerone is required")
+			}
+
+			if username == "" {
+				return errors.New("--username is required")
+			}
+
+			token := os.Getenv(hackeroneTokenEnv)
+			if token == "" {
+				return fmt.Errorf("%s is not set", hackeroneTokenEnv)
+			}
+
+			assets, err := hackerone.FetchScope(cmd.Context(), handle, username, token)
+			if err != nil {
+				return err
+			}
+
+			lines := hackerone.ScopeLines(assets)
+			if len(lines) == 0 {
+				return fmt.Errorf("%s: no submittable web assets in scope", handle)
+			}
+
+			out := strings.Join(lines, "\n") + "\n"
+
+			if outPath == "" {
+				_, err := fmt.Fprint(cmd.OutOrStdout(), out)
+
+				return err
+			}
+
+			//nolint:gosec // G703: outPath is the operator-supplied --out.
+			if err := os.WriteFile(outPath, []byte(out), 0o600); err != nil {
+				return fmt.Errorf("writing scope file: %w", err)
+			}
+
+			_, err = fmt.Fprintf(cmd.ErrOrStderr(), "%d assets written to %s\n", len(lines), outPath)
+
+			return err
+		},
+	}
+
+	cmd.Flags().StringVar(&handle, "hackerone", "", "HackerOne program handle")
+	cmd.Flags().StringVar(&username, "username", "", "your HackerOne username")
+	cmd.Flags().StringVar(&outPath, "out", "", "write the scope file here instead of stdout")
 
 	return cmd
 }

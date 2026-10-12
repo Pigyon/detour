@@ -133,7 +133,7 @@ func TestHarvestPassiveIssuesZeroTargetRequests(t *testing.T) {
 
 	// The archives are unreachable under the scope guard, which is fine: the
 	// assertion is about the target, not about finding anything.
-	cmd := newRootWith(t, harvestArgs(target.URL, "--passive", "--scope-file", scopeFile(t, "127.0.0.1")))
+	cmd := newRootWith(t, harvestArgs(target.URL, "--passive", flagScopeFile, scopeFile(t, "127.0.0.1")))
 	_ = cmd.Execute()
 
 	assert.Zero(t, hits.Load(), "passive must never touch the target")
@@ -151,7 +151,7 @@ func TestPipelineEndToEnd(t *testing.T) {
 
 	out, errOut := runCLI(t, []string{
 		flagRate, "200",
-		"--scope-file", scopeFile(t, "127.0.0.1"),
+		flagScopeFile, scopeFile(t, "127.0.0.1"),
 		"--crawl=false",
 		"--out", dir,
 		srv.URL + "/a01?url=https://allowed.lab/",
@@ -181,7 +181,7 @@ func TestPipelineResumesByDefault(t *testing.T) {
 
 	runCLI(t, []string{
 		flagRate, "200",
-		"--scope-file", scopeFile(t, "127.0.0.1"),
+		flagScopeFile, scopeFile(t, "127.0.0.1"),
 		"--crawl=false",
 		"--out", dir,
 		target,
