@@ -133,6 +133,8 @@ func registerPersistentFlags(root *cobra.Command) {
 	fs.String("proxy", "", "HTTP proxy URL (for example http://127.0.0.1:8080)")
 	fs.String("tls-impersonate", "",
 		"impersonate a browser's TLS fingerprint (chrome, firefox); sends matching browser headers too")
+	fs.String("user-agent", "",
+		"User-Agent sent on every request; required with --tls-impersonate so it matches the impersonated browser")
 	fs.Float64("rate", 5, "per-host requests per second")
 	fs.Int("concurrency", 10, "max concurrent in-flight requests")
 	fs.Duration("delay", 0, "additional delay between per-host requests")

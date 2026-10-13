@@ -44,6 +44,7 @@ type Config struct {
 	RedirectTo     string        `mapstructure:"redirect-to"`
 	Proxy          string        `mapstructure:"proxy"`
 	TLSImpersonate string        `mapstructure:"tls-impersonate"`
+	UserAgent      string        `mapstructure:"user-agent"`
 	Headers        []string      `mapstructure:"header"`
 	Cookie         string        `mapstructure:"cookie"`
 	CookiesFile    string        `mapstructure:"cookies-file"`
