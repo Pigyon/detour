@@ -17,6 +17,14 @@ const (
 	OriginReferrer = "document.referrer"
 	// OriginStorage is localStorage or sessionStorage.
 	OriginStorage = "storage"
+	// OriginSelf is the whole current location (location.href,
+	// location.toString(), document.URL). Navigating there stays on the current
+	// origin, so it is not an attacker-controllable redirect destination even
+	// when a carrier variable happens to be named like a redirect parameter.
+	OriginSelf = "location.self"
+	// OriginConstant is a string literal destination, fixed in the code and so
+	// not attacker-controllable.
+	OriginConstant = "constant"
 	// OriginUnknown means the value was not traced to a controllable source.
 	OriginUnknown = "unknown"
 )
@@ -39,12 +47,23 @@ var redirectParams = map[string]struct{}{
 	"callback": {}, "relaystate": {}, "wreply": {},
 }
 
-// originOf traces a sink expression back to the source that feeds it.
-func originOf(e tdjs.IExpr) Origin {
-	t := &originTracer{out: Origin{Kind: OriginUnknown}}
+// originOf traces a sink expression back to the source that feeds it,
+// following bare identifiers into the expression they were assigned so a local
+// is classified by its real source rather than by its name.
+func (s *scanner) originOf(e tdjs.IExpr) Origin {
+	t := &originTracer{out: Origin{Kind: OriginUnknown}, scan: s, seen: map[*tdjs.Var]struct{}{}}
 	tdjs.Walk(t, e)
 
-	if t.out.Kind == OriginUnknown && t.param != "" {
+	switch {
+	case t.out.Kind != OriginUnknown:
+		// A concrete controllable source (search, hash, storage) was found and
+		// outranks the name heuristic.
+	case t.selfLocation:
+		// The value is the whole current location: self-navigation, not a
+		// redirect source. This wins over the redirect-param name heuristic,
+		// which is exactly what used to misread `uri = location.toString()`.
+		t.out.Kind = OriginSelf
+	case t.param != "":
 		t.out.Kind = OriginQuery
 	}
 
@@ -54,8 +73,11 @@ func originOf(e tdjs.IExpr) Origin {
 }
 
 type originTracer struct {
-	out   Origin
-	param string
+	out          Origin
+	param        string
+	selfLocation bool
+	scan         *scanner
+	seen         map[*tdjs.Var]struct{}
 }
 
 func (t *originTracer) Exit(tdjs.INode) {}
@@ -66,11 +88,32 @@ func (t *originTracer) Enter(n tdjs.INode) tdjs.IVisitor {
 		t.readPath(dotPath(node))
 	case *tdjs.Var:
 		t.readIdentifier(string(node.Name()))
+		t.followBinding(node)
 	case *tdjs.CallExpr:
 		t.readCall(node)
 	}
 
 	return t
+}
+
+// followBinding traces a bare identifier into the expression it was assigned,
+// so a local carrying location.search (or the whole location) is classified by
+// that source and not by the local's name. A seen set guards against a cycle.
+func (t *originTracer) followBinding(v *tdjs.Var) {
+	if t.scan == nil {
+		return
+	}
+
+	key := canonical(v)
+	if _, done := t.seen[key]; done {
+		return
+	}
+
+	t.seen[key] = struct{}{}
+
+	if def, ok := t.scan.bindings[key]; ok {
+		tdjs.Walk(t, def)
+	}
 }
 
 // pathOrigins maps a well-known browser property to the origin it represents.
@@ -87,6 +130,10 @@ func (t *originTracer) readPath(path string) {
 		return
 	}
 
+	if isWholeLocation(path) {
+		t.selfLocation = true
+	}
+
 	tail := path
 	if i := strings.LastIndex(path, "."); i >= 0 {
 		tail = path[i+1:]
@@ -99,6 +146,34 @@ func (t *originTracer) readPath(path string) {
 	if strings.Contains(path, "searchParams") || strings.Contains(path, "query") {
 		t.set(OriginQuery)
 	}
+}
+
+// wholeLocationPaths are reads of the entire current URL (not just a
+// controllable piece like .search or .hash).
+var wholeLocationPaths = map[string]struct{}{
+	"document.url":         {},
+	"document.documenturi": {},
+	"document.baseuri":     {},
+}
+
+// isWholeLocation reports whether a dotted path reads the whole current
+// location: a location object itself, its .href, or document.URL and friends.
+func isWholeLocation(path string) bool {
+	if _, ok := wholeLocationPaths[strings.ToLower(path)]; ok {
+		return true
+	}
+
+	if _, ok := locationObjects[path]; ok {
+		return true
+	}
+
+	if trimmed, ok := strings.CutSuffix(path, ".href"); ok {
+		if _, isLoc := locationObjects[trimmed]; isLoc {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (t *originTracer) readIdentifier(name string) {
@@ -115,11 +190,27 @@ func (t *originTracer) readIdentifier(name string) {
 // searchParams.get("backUrl") names backUrl.
 func (t *originTracer) readCall(call *tdjs.CallExpr) {
 	dot, ok := call.X.(*tdjs.DotExpr)
-	if !ok || len(call.Args.List) == 0 {
+	if !ok {
 		return
 	}
 
 	method := literalName(dot.Y)
+
+	// location.toString() / window.location.toString() yields the whole current
+	// URL, the same as reading location.href: self-referential, not a redirect
+	// source.
+	if method == "toString" {
+		if _, isLoc := locationObjects[dotPath(dot.X)]; isLoc {
+			t.selfLocation = true
+		}
+
+		return
+	}
+
+	if len(call.Args.List) == 0 {
+		return
+	}
+
 	if method != "get" && method != "getItem" && method != "param" {
 		return
 	}

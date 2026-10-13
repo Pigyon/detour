@@ -35,6 +35,14 @@ const canaryHost = "{{canary}}"
 // verdictsFor reports every way a sink can be reached with an attacker
 // destination, given the guard that protects it.
 func verdictsFor(sink Sink) []Verdict {
+	// A destination that is the whole current location, or a fixed string, is
+	// not attacker-controllable, so navigating to it is not an open redirect.
+	// Unknown origins are still reported: those are values detour could not
+	// trace, not values it proved safe.
+	if sink.Origin.Kind == OriginSelf || sink.Origin.Kind == OriginConstant {
+		return nil
+	}
+
 	if sink.Validator == nil {
 		return unguardedVerdicts(sink)
 	}

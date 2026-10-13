@@ -258,7 +258,7 @@ func isRouter(receiver string) bool {
 
 func (v *visitor) add(kind string, value tdjs.IExpr) {
 	guards := v.guards
-	origin := originOf(value)
+	origin := v.scan.originOf(value)
 
 	// A sink handed a bare identifier is guarded by whatever decided that
 	// identifier's value, not by the statement it appears in.
@@ -269,9 +269,19 @@ func (v *visitor) add(kind string, value tdjs.IExpr) {
 
 		// The defining expression names the real request parameter; the sink
 		// itself only ever names the local that carries it.
-		if defOrigin := originOf(def); defOrigin.Param != "" || origin.Kind == OriginUnknown {
+		if defOrigin := v.scan.originOf(def); defOrigin.Param != "" || origin.Kind == OriginUnknown {
 			origin = defOrigin
 		}
+
+		// A local assigned a fixed string is a constant destination.
+		if _, isLit := stringLiteral(def); isLit {
+			origin = Origin{Kind: OriginConstant}
+		}
+	}
+
+	// A literal destination written straight into the sink is constant too.
+	if _, isLit := stringLiteral(value); isLit {
+		origin = Origin{Kind: OriginConstant}
 	}
 
 	texts := make([]string, 0, len(guards))
