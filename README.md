@@ -1,6 +1,6 @@
 <div align="center">
   <h1>detour</h1>
-  <img src="detour.png" width="200" alt="detour logo">
+  <img src="readme/detour.png" width="200" alt="detour logo">
   <h3><i>Every redirect goes somewhere</i></h3>
   <p>Open redirect discovery and verification engine</p>
 
