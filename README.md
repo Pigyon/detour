@@ -21,8 +21,7 @@ It reads destinations a parameter scanner cannot: ones buried in compressed or
 signed envelopes, ones guarded by minified client-side JavaScript, and ones that
 only fire after the page loads. Findings record what the redirect can do (OAuth
 `redirect_uri` theft, `javascript:` execution, Referer leak, CSP bypass, cache
-poisoning) and CVSS is derived from that. It reports escalations, it never
-performs them.
+poisoning) and CVSS is derived from that.
 
 ## How it works?
 
@@ -91,8 +90,7 @@ TLS handshake, and Go's default handshake is an instant tell. `--tls-impersonate
 chrome` (or `firefox`) replays that browser's TLS ClientHello and the headers to
 match, so requests look like the browser they claim to be. The User-Agent is
 operator-supplied via `--user-agent` (required here, so it matches the real
-browser whose session you are using) rather than a constant that rots. This is
-browser-faithful request shaping, not captcha solving or IP rotation.
+browser whose session you are using) rather than a constant that rots.
 
 **Runs that do not get cut.** By default a run has no time limit. `--budget`
 caps it and still reports everything proved so far when it expires;
