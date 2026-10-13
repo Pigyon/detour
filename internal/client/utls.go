@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -20,23 +21,22 @@ type browserProfile struct {
 	headers http.Header
 }
 
+// The profiles carry no User-Agent on purpose: a baked-in version string rots
+// and will not match the real browser whose session and TLS fingerprint are
+// being replayed. The User-Agent must come from --user-agent (or an explicit
+// --header), so the operator supplies the one that matches their browser.
 var browserProfiles = map[string]browserProfile{
 	"chrome": {
 		helloID: utls.HelloChrome_Auto,
 		headers: http.Header{
-			"User-Agent":                {"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"},
 			"Accept":                    {"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"},
 			"Accept-Language":           {"en-US,en;q=0.9"},
-			"Sec-Ch-Ua":                 {`"Chromium";v="131", "Not_A Brand";v="24"`},
-			"Sec-Ch-Ua-Mobile":          {"?0"},
-			"Sec-Ch-Ua-Platform":        {`"Windows"`},
 			"Upgrade-Insecure-Requests": {"1"},
 		},
 	},
 	"firefox": {
 		helloID: utls.HelloFirefox_Auto,
 		headers: http.Header{
-			"User-Agent":                {"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0"},
 			"Accept":                    {"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
 			"Accept-Language":           {"en-US,en;q=0.5"},
 			"Upgrade-Insecure-Requests": {"1"},
@@ -62,6 +62,41 @@ func resolveBrowserProfile(name string) (*browserProfile, error) {
 	}
 
 	return &p, nil
+}
+
+// resolveBrowserDefaults builds the default header set applied to every
+// request: the browser profile's headers (when impersonating) plus a
+// user-provided User-Agent. The User-Agent is never a constant in the binary;
+// it comes from --user-agent or an explicit --header, so it matches the real
+// browser whose session and TLS fingerprint are being used. Impersonating
+// without any User-Agent is refused, because a browser TLS handshake paired
+// with Go's default User-Agent is an obvious mismatch.
+func resolveBrowserDefaults(profile *browserProfile, userAgent string, inline http.Header) (http.Header, error) {
+	var defaults http.Header
+
+	if profile != nil {
+		defaults = mergeHeaders(profile.headers, nil)
+	}
+
+	ua := userAgent
+	if ua == "" {
+		ua = inline.Get("User-Agent")
+	}
+
+	if profile != nil && ua == "" {
+		return nil, errors.New(
+			"--tls-impersonate needs a User-Agent: pass --user-agent (ideally the one from the browser whose session you are using)")
+	}
+
+	if ua != "" {
+		if defaults == nil {
+			defaults = make(http.Header)
+		}
+
+		defaults.Set("User-Agent", ua)
+	}
+
+	return defaults, nil
 }
 
 // applyBrowserDefaults fills in browser-like headers for any name not already

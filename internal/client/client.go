@@ -129,9 +129,9 @@ func New(cfg config.Config, guard *scope.Guard) (*Client, error) {
 		limit = rate.Limit(5)
 	}
 
-	var browserDefs http.Header
-	if profile != nil {
-		browserDefs = profile.headers
+	browserDefs, err := resolveBrowserDefaults(profile, cfg.UserAgent, inlineHeaders)
+	if err != nil {
+		return nil, err
 	}
 
 	c := &Client{
