@@ -89,6 +89,9 @@ type Client struct {
 	delay           time.Duration
 	timeout         time.Duration
 	limiters        sync.Map
+	// browserDefaults holds browser-like headers (User-Agent, Accept, etc.)
+	// applied when --tls-impersonate is active. Explicit --header values win.
+	browserDefaults http.Header
 	// inFlight bounds how many requests are on the wire at once.
 	//
 	// The bound belongs here rather than in a worker pool, because this is the
@@ -111,7 +114,12 @@ func New(cfg config.Config, guard *scope.Guard) (*Client, error) {
 		return nil, err
 	}
 
-	transport, err := newTransport(cfg.Proxy)
+	profile, err := resolveBrowserProfile(cfg.TLSImpersonate)
+	if err != nil {
+		return nil, err
+	}
+
+	transport, err := newTransport(cfg.Proxy, profile)
 	if err != nil {
 		return nil, err
 	}
@@ -119,6 +127,11 @@ func New(cfg config.Config, guard *scope.Guard) (*Client, error) {
 	limit := rate.Limit(cfg.Rate)
 	if limit <= 0 {
 		limit = rate.Limit(5)
+	}
+
+	var browserDefs http.Header
+	if profile != nil {
+		browserDefs = profile.headers
 	}
 
 	c := &Client{
@@ -137,6 +150,7 @@ func New(cfg config.Config, guard *scope.Guard) (*Client, error) {
 		authRequired:    cfg.AuthCheckRequired,
 		rate:            limit,
 		delay:           cfg.Delay,
+		browserDefaults: browserDefs,
 	}
 
 	// The initial credential set comes from the same reload path the refresh
@@ -149,23 +163,34 @@ func New(cfg config.Config, guard *scope.Guard) (*Client, error) {
 	return c, nil
 }
 
-func newTransport(proxy string) (*http.Transport, error) {
+func newTransport(proxy string, profile *browserProfile) (*http.Transport, error) {
 	base, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		return nil, errors.New("http.DefaultTransport is not *http.Transport")
 	}
 
 	transport := base.Clone()
-	if proxy == "" {
-		return transport, nil
+
+	var proxyURL *url.URL
+
+	if proxy != "" {
+		var parseErr error
+
+		proxyURL, parseErr = url.Parse(proxy)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parsing proxy url: %w", parseErr)
+		}
 	}
 
-	proxyURL, err := url.Parse(proxy)
-	if err != nil {
-		return nil, fmt.Errorf("parsing proxy url: %w", err)
-	}
+	if profile != nil {
+		transport.DialTLSContext = makeUTLSDialer(proxyURL, profile.helloID)
 
-	transport.Proxy = http.ProxyURL(proxyURL)
+		if proxyURL != nil {
+			transport.Proxy = httpOnlyProxy(proxyURL)
+		}
+	} else if proxyURL != nil {
+		transport.Proxy = http.ProxyURL(proxyURL)
+	}
 
 	return transport, nil
 }
@@ -185,6 +210,7 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 
 	headers, cookies := c.creds.snapshot()
 	applyCredentials(req, headers, cookies)
+	applyBrowserDefaults(req, c.browserDefaults)
 
 	// The rate wait happens before the in-flight slot is taken, not after. A
 	// goroutine blocked on a collapsed host's limiter is not a request on the

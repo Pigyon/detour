@@ -10,6 +10,7 @@ require (
 	github.com/projectdiscovery/httpx v1.12.0
 	github.com/projectdiscovery/retryablehttp-go v1.3.25
 	github.com/projectdiscovery/subfinder/v2 v2.16.0
+	github.com/refraction-networking/utls v1.8.2
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.12.1
@@ -103,7 +104,6 @@ require (
 	github.com/projectdiscovery/tlsx v1.4.0 // indirect
 	github.com/projectdiscovery/useragent v0.0.109 // indirect
 	github.com/projectdiscovery/utils v0.11.3 // indirect
-	github.com/refraction-networking/utls v1.8.2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rs/xid v1.6.0 // indirect
 	github.com/sagikazarmark/locafero v0.11.0 // indirect
