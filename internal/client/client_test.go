@@ -211,6 +211,53 @@ func mustHost(t *testing.T, rawURL string) string {
 	return host
 }
 
+// TestDoReplaysServerSetCookie proves the per-run cookie jar carries a
+// Set-Cookie forward, which is what lets a run get past a bot-defense WAF that
+// hands out a cookie on the first response and challenges requests without it.
+func TestDoReplaysServerSetCookie(t *testing.T) {
+	t.Parallel()
+
+	var (
+		reqCount  atomic.Int32
+		firstHad  atomic.Bool
+		secondHad atomic.Bool
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, err := r.Cookie("bot_guard")
+		present := err == nil
+
+		switch reqCount.Add(1) {
+		case 1:
+			firstHad.Store(present)
+		case 2:
+			secondHad.Store(present)
+		}
+
+		//nolint:gosec // G124: a test fixture cookie, replayed as given.
+		http.SetCookie(w, &http.Cookie{Name: "bot_guard", Value: "ok", Path: "/"})
+
+		_, _ = io.WriteString(w, "ok")
+	}))
+	t.Cleanup(srv.Close)
+
+	host := mustHost(t, srv.URL)
+	c := newTestClient(t, config.Config{Rate: 50, Timeout: time.Second}, host)
+
+	for range 2 {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
+		require.NoError(t, err)
+
+		resp, err := c.Do(context.Background(), req)
+		require.NoError(t, err)
+
+		_ = resp.Body.Close()
+	}
+
+	assert.False(t, firstHad.Load(), "first request should not carry the cookie yet")
+	assert.True(t, secondHad.Load(), "second request should replay the cookie the server set")
+}
+
 // TestDoReturnsResponseWithUnparseableLocation is a regression for a miss that
 // hid a whole technique class.
 //
