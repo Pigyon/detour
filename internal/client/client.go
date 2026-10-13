@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"sync"
 	"syscall"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/nedlir/detour/internal/config"
 	"github.com/nedlir/detour/internal/scope"
+	"golang.org/x/net/publicsuffix"
 	"golang.org/x/time/rate"
 )
 
@@ -92,6 +94,12 @@ type Client struct {
 	// browserDefaults holds browser-like headers (User-Agent, Accept, etc.)
 	// applied when --tls-impersonate is active. Explicit --header values win.
 	browserDefaults http.Header
+	// jar carries Set-Cookie forward across requests within a run, the way a
+	// browser does. A bot-defense WAF (Akamai, Cloudflare) hands out a cookie on
+	// the first response and challenges every later request that does not replay
+	// it, so without this the first probe to a host answers and the rest are
+	// blocked. Operator-supplied cookies still win on a name clash.
+	jar http.CookieJar
 	// inFlight bounds how many requests are on the wire at once.
 	//
 	// The bound belongs here rather than in a worker pool, because this is the
@@ -134,6 +142,11 @@ func New(cfg config.Config, guard *scope.Guard) (*Client, error) {
 		return nil, err
 	}
 
+	jar, err := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
+	if err != nil {
+		return nil, fmt.Errorf("creating cookie jar: %w", err)
+	}
+
 	c := &Client{
 		transport:       transport,
 		timeout:         cfg.Timeout,
@@ -151,6 +164,7 @@ func New(cfg config.Config, guard *scope.Guard) (*Client, error) {
 		rate:            limit,
 		delay:           cfg.Delay,
 		browserDefaults: browserDefs,
+		jar:             jar,
 	}
 
 	// The initial credential set comes from the same reload path the refresh
@@ -456,6 +470,8 @@ func (c *Client) roundTrip(ctx context.Context, req *http.Request) (*http.Respon
 		ctx, cancel = context.WithTimeout(ctx, c.timeout)
 	}
 
+	c.applyJarCookies(req)
+
 	resp, err := c.transport.RoundTrip(req.Clone(ctx))
 	if err != nil {
 		cancel()
@@ -463,12 +479,49 @@ func (c *Client) roundTrip(ctx context.Context, req *http.Request) (*http.Respon
 		return nil, fmt.Errorf("round trip: %w", err)
 	}
 
+	c.captureJarCookies(req.URL, resp)
+
 	// The deadline has to outlive this function, because the body is read by
 	// the caller. Cancelling here would close it first, so cancellation is
 	// tied to the body instead.
 	resp.Body = &cancelBody{ReadCloser: resp.Body, cancel: cancel}
 
 	return resp, nil
+}
+
+// applyJarCookies adds the jar's cookies for this URL to req, skipping any name
+// the request already carries so operator-supplied cookies and a previous
+// attempt's additions are never duplicated.
+func (c *Client) applyJarCookies(req *http.Request) {
+	if c.jar == nil {
+		return
+	}
+
+	have := make(map[string]struct{})
+	for _, ck := range req.Cookies() {
+		have[ck.Name] = struct{}{}
+	}
+
+	for _, ck := range c.jar.Cookies(req.URL) {
+		if _, ok := have[ck.Name]; ok {
+			continue
+		}
+
+		req.AddCookie(ck)
+	}
+}
+
+// captureJarCookies stores a response's Set-Cookie values so later requests to
+// the host replay them. Only in-scope hosts reach this path, so the jar never
+// holds a cookie from a host the guard would refuse.
+func (c *Client) captureJarCookies(u *url.URL, resp *http.Response) {
+	if c.jar == nil {
+		return
+	}
+
+	if cookies := resp.Cookies(); len(cookies) > 0 {
+		c.jar.SetCookies(u, cookies)
+	}
 }
 
 // cancelBody releases the request context once the caller is done with the
