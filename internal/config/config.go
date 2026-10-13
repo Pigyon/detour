@@ -37,19 +37,20 @@ const (
 
 // Config is the resolved runtime configuration.
 type Config struct {
-	ConfigFile  string        `mapstructure:"config"`
-	LogLevel    string        `mapstructure:"log-level"`
-	ScopeFile   string        `mapstructure:"scope-file"`
-	Canary      string        `mapstructure:"canary"`
-	RedirectTo  string        `mapstructure:"redirect-to"`
-	Proxy       string        `mapstructure:"proxy"`
-	Headers     []string      `mapstructure:"header"`
-	Cookie      string        `mapstructure:"cookie"`
-	CookiesFile string        `mapstructure:"cookies-file"`
-	Rate        float64       `mapstructure:"rate"`
-	Concurrency int           `mapstructure:"concurrency"`
-	Delay       time.Duration `mapstructure:"delay"`
-	Timeout     time.Duration `mapstructure:"timeout"`
+	ConfigFile     string        `mapstructure:"config"`
+	LogLevel       string        `mapstructure:"log-level"`
+	ScopeFile      string        `mapstructure:"scope-file"`
+	Canary         string        `mapstructure:"canary"`
+	RedirectTo     string        `mapstructure:"redirect-to"`
+	Proxy          string        `mapstructure:"proxy"`
+	TLSImpersonate string        `mapstructure:"tls-impersonate"`
+	Headers        []string      `mapstructure:"header"`
+	Cookie         string        `mapstructure:"cookie"`
+	CookiesFile    string        `mapstructure:"cookies-file"`
+	Rate           float64       `mapstructure:"rate"`
+	Concurrency    int           `mapstructure:"concurrency"`
+	Delay          time.Duration `mapstructure:"delay"`
+	Timeout        time.Duration `mapstructure:"timeout"`
 	// Budget bounds the whole run's wall-clock time. Zero means unlimited.
 	//
 	// --timeout bounds one request and --rate paces one host, but nothing
