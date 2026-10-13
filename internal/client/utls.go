@@ -119,12 +119,32 @@ func utlsHandshake(ctx context.Context, rawConn net.Conn, addr string, helloID u
 		return nil, fmt.Errorf("splitting host:port %q: %w", addr, err)
 	}
 
-	cfg := &utls.Config{
-		ServerName: host,
-		NextProtos: []string{"http/1.1"},
+	// The browser presets advertise h2 ahead of http/1.1 in ALPN, and a server
+	// that picks h2 then speaks HTTP/2 frames that Go's HTTP/1.1 transport (the
+	// one DialTLSContext feeds) cannot parse. Forcing ALPN to http/1.1 avoids
+	// that without touching the JA3 fingerprint: JA3 hashes the extension's
+	// type id, not the protocol list inside it, so the hello still looks like
+	// the browser's.
+	spec, err := utls.UTLSIdToSpec(helloID)
+	if err != nil {
+		_ = rawConn.Close()
+
+		return nil, fmt.Errorf("resolving utls spec: %w", err)
 	}
 
-	uconn := utls.UClient(rawConn, cfg, helloID)
+	for _, ext := range spec.Extensions {
+		if alpn, ok := ext.(*utls.ALPNExtension); ok {
+			alpn.AlpnProtocols = []string{"http/1.1"}
+		}
+	}
+
+	uconn := utls.UClient(rawConn, &utls.Config{ServerName: host}, utls.HelloCustom)
+	if err := uconn.ApplyPreset(&spec); err != nil {
+		_ = rawConn.Close()
+
+		return nil, fmt.Errorf("applying utls spec: %w", err)
+	}
+
 	if err := uconn.HandshakeContext(ctx); err != nil {
 		_ = rawConn.Close()
 
