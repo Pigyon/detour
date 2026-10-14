@@ -8,6 +8,16 @@ import (
 	"time"
 )
 
+// Default per-source wall-clock limits. Without them a single source that
+// never answers hangs the whole harvest forever: --budget bounds the attack,
+// not this stage, so a run with no budget set would sit at zero percent CPU
+// indefinitely waiting on, for example, an archive host that accepted the
+// connection and then went silent.
+const (
+	defaultSourceTimeout = 30 * time.Second
+	defaultCrawlTimeout  = 5 * time.Minute
+)
+
 // Options configures a harvest run.
 type Options struct {
 	// Passive keeps the run entirely off the target: archives only, not one
@@ -22,6 +32,12 @@ type Options struct {
 	// allowlist is the archive hosts. Nil falls back to the target client,
 	// which a scope file will then lock out.
 	Archives Doer
+	// SourceTimeout bounds a single archive or freebies source. Zero uses the
+	// default. The crawl gets its own, longer limit.
+	SourceTimeout time.Duration
+	// CrawlTimeout bounds the crawl, which legitimately takes longer than a
+	// single archive fetch because it walks many pages. Zero uses the default.
+	CrawlTimeout time.Duration
 }
 
 // Crawler walks a target for URLs. Declared here because this is where it is
@@ -40,10 +56,12 @@ type Result struct {
 
 // Harvester pulls URLs for a domain from every source it has.
 type Harvester struct {
-	client    Doer
-	providers []Provider
-	crawler   Crawler
-	passive   bool
+	client        Doer
+	providers     []Provider
+	crawler       Crawler
+	passive       bool
+	sourceTimeout time.Duration
+	crawlTimeout  time.Duration
 }
 
 // New builds a harvester. A nil provider list uses the keyless defaults.
@@ -58,11 +76,23 @@ func New(client Doer, opts Options) *Harvester {
 		providers = DefaultProviders(archives)
 	}
 
+	sourceTimeout := opts.SourceTimeout
+	if sourceTimeout <= 0 {
+		sourceTimeout = defaultSourceTimeout
+	}
+
+	crawlTimeout := opts.CrawlTimeout
+	if crawlTimeout <= 0 {
+		crawlTimeout = defaultCrawlTimeout
+	}
+
 	return &Harvester{
-		client:    client,
-		providers: providers,
-		crawler:   opts.Crawler,
-		passive:   opts.Passive,
+		client:        client,
+		providers:     providers,
+		crawler:       opts.Crawler,
+		passive:       opts.Passive,
+		sourceTimeout: sourceTimeout,
+		crawlTimeout:  crawlTimeout,
 	}
 }
 
@@ -124,7 +154,10 @@ func (h *Harvester) fromProvider(ctx context.Context, p Provider, domain string)
 
 	slog.Debug("harvesting archive", "provider", p.Name(), "domain", domain)
 
-	return p.Fetch(ctx, domain)
+	fetchCtx, cancel := context.WithTimeout(ctx, h.sourceTimeout)
+	defer cancel()
+
+	return p.Fetch(fetchCtx, domain)
 }
 
 // active is everything that touches the target itself, skipped under
@@ -134,7 +167,11 @@ func (h *Harvester) active(ctx context.Context, base string, result *Result) {
 		return
 	}
 
-	freebies, errs := Freebies(ctx, h.client, base)
+	freebieCtx, cancelFreebies := context.WithTimeout(ctx, h.sourceTimeout)
+	freebies, errs := Freebies(freebieCtx, h.client, base)
+
+	cancelFreebies()
+
 	if len(freebies) > 0 {
 		result.URLs = append(result.URLs, freebies...)
 		result.Sources = append(result.Sources, "freebies")
@@ -148,7 +185,10 @@ func (h *Harvester) active(ctx context.Context, base string, result *Result) {
 		return
 	}
 
-	crawled, err := h.crawler.Crawl(ctx, base)
+	crawlCtx, cancelCrawl := context.WithTimeout(ctx, h.crawlTimeout)
+	defer cancelCrawl()
+
+	crawled, err := h.crawler.Crawl(crawlCtx, base)
 	if err != nil {
 		result.Errors = append(result.Errors, "crawl: "+err.Error())
 

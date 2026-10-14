@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/nedlir/detour/internal/adapter"
 	"github.com/nedlir/detour/internal/attack"
@@ -30,6 +31,12 @@ import (
 const (
 	dirPerm  = 0o750
 	filePerm = 0o600
+
+	// surfaceStageTimeout bounds the whole surface stage (enumerate, resolve,
+	// probe) so a hung source cannot stall a run before it ever reaches the
+	// attack. Per-lookup limits live in the surface package; this is the
+	// aggregate backstop.
+	surfaceStageTimeout = 10 * time.Minute
 )
 
 // runPipeline is the end-to-end path: surface, harvest, select, attack, and
@@ -73,6 +80,32 @@ func runPipelineTargets(cmd *cobra.Command, targets []string, flags *reconFlags,
 	return errors.Join(errs...)
 }
 
+// warnTargetScope says loudly when a target named on the command line is not
+// in the scope file. Its own pages are then refused as out of scope, so the
+// harvest finds nothing and the run reports a hollow "0 findings" that reads
+// as clean. The usual cause is a scope file with only a wildcard
+// (*.example.com), which matches subdomains but not the apex example.com.
+func warnTargetScope(cmd *cobra.Command, cfg config.Config, target string) {
+	if cfg.ScopeFile == "" {
+		return
+	}
+
+	guard, err := guardFromConfig(cfg)
+	if err != nil {
+		return
+	}
+
+	domain, _ := splitTarget(target)
+	if domain == "" || guard.Allows(domain) {
+		return
+	}
+
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+		"WARNING: target %s is not in --scope-file, so its own pages cannot be crawled and the run will find "+
+			"almost nothing; add %s explicitly (a wildcard *.%s matches subdomains, not the apex)\n",
+		domain, domain, domain)
+}
+
 // targetOutDir places each target's output under its own subdirectory of the
 // base --out so a multi-target sweep does not overwrite one report with the
 // next. An empty base (no --out) stays empty: nothing is written to disk.
@@ -106,6 +139,8 @@ func runPipeline(cmd *cobra.Command, target string, flags *reconFlags, headless 
 	if err != nil {
 		return err
 	}
+
+	warnTargetScope(cmd, cfg, target)
 
 	// Verified before recon, the expensive part: a run that must be
 	// authenticated should fail at once rather than surface, crawl, and attack
@@ -426,6 +461,12 @@ func surfaceOrigins(cmd *cobra.Command, cfg config.Config, domain string, flags 
 		return nil
 	}
 
+	if flags.skipSurface {
+		slog.Debug("skipping surface stage", "reason", "--skip-surface")
+
+		return nil
+	}
+
 	mapper, err := newMapper(cfg)
 	if err != nil {
 		slog.Warn("skipping surface stage", "reason", err)
@@ -433,7 +474,12 @@ func surfaceOrigins(cmd *cobra.Command, cfg config.Config, domain string, flags 
 		return nil
 	}
 
-	result := mapper.Run(cmd.Context(), domain)
+	// The surface stage gets its own wall-clock bound so a hung enumeration or
+	// lookup cannot stall the whole run: --budget covers the attack, not this.
+	ctx, cancel := context.WithTimeout(cmd.Context(), surfaceStageTimeout)
+	defer cancel()
+
+	result := mapper.Run(ctx, domain)
 
 	if len(result.Priority()) > 0 {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(),

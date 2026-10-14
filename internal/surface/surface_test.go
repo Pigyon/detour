@@ -7,11 +7,50 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/nedlir/detour/internal/surface"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// hangingResolver blocks until its context is cancelled, standing in for a DNS
+// lookup that never answers. The real DNSResolver bounds itself the same way
+// via a per-lookup timeout, so honoring ctx is what keeps the stage from
+// wedging.
+type hangingResolver struct{}
+
+func (hangingResolver) Resolve(ctx context.Context, _ string) ([]string, string, error) {
+	<-ctx.Done()
+
+	return nil, "", ctx.Err()
+}
+
+// TestSurfaceReturnsWhenResolverHonorsDeadline is the regression for the
+// surface wedge: a lookup that never answers must not stall the stage, as long
+// as it respects the context deadline.
+func TestSurfaceReturnsWhenResolverHonorsDeadline(t *testing.T) {
+	t.Parallel()
+
+	mapper := surface.New(surface.Options{
+		Enumerator:  stubEnum{hosts: []string{"slow.a.lab"}},
+		Resolver:    hangingResolver{},
+		Concurrency: 4,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	done := make(chan surface.Result, 1)
+	go func() { done <- mapper.Run(ctx, "a.lab") }()
+
+	select {
+	case res := <-done:
+		require.NotEmpty(t, res.Errors, "the stalled lookup is recorded as an error")
+	case <-time.After(5 * time.Second):
+		t.Fatal("surface did not return when the resolver honored the context deadline")
+	}
+}
 
 type stubEnum struct{ hosts []string }
 

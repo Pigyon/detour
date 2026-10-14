@@ -30,6 +30,7 @@ func newAttackCmd() *cobra.Command {
 		headless  bool
 		escalate  bool
 		useNuclei bool
+		deep      bool
 	)
 
 	cmd := &cobra.Command{
@@ -40,7 +41,7 @@ func newAttackCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runAttack(cmd, args[0], attackOptions{
 				keyword: keyword, filter: filter, outDir: outDir, resume: resume,
-				headless: headless, escalate: escalate, nuclei: useNuclei,
+				headless: headless, escalate: escalate, nuclei: useNuclei, deep: deep,
 			})
 		},
 	}
@@ -49,6 +50,7 @@ func newAttackCmd() *cobra.Command {
 	cmd.Flags().StringVar(&filter, "filter", "", "comma-separated mechanisms to report ("+strings.Join(payload.Mechanisms(), ",")+")")
 	cmd.Flags().StringVar(&outDir, "out", "", "write REPORT.md, a per-finding report, and the machine formats to this directory")
 	cmd.Flags().StringVar(&resume, "resume", "", "append-only checkpoint file; skip completed attempts")
+	cmd.Flags().BoolVar(&deep, "deep", false, "brute-force hidden redirect parameters on endpoints with no candidate")
 	cmd.Flags().BoolVar(&headless, "headless", false, "prove candidates in a headless browser (needs Chrome)")
 	cmd.Flags().BoolVar(&escalate, "escalate", false, "attach escalation capabilities; never performs the escalation")
 	cmd.Flags().BoolVar(&useNuclei, "nuclei", false,
@@ -67,6 +69,7 @@ type attackOptions struct {
 	headless bool
 	escalate bool
 	nuclei   bool
+	deep     bool
 }
 
 func runAttack(cmd *cobra.Command, source string, opts attackOptions) error {
@@ -117,6 +120,14 @@ func runAttack(cmd *cobra.Command, source string, opts attackOptions) error {
 
 	if len(urls) == 0 {
 		return errors.New("no urls in source")
+	}
+
+	// --deep brute-forces hidden redirect parameters on the loaded endpoints,
+	// the same discovery the full pipeline runs. Without it, attacking a saved
+	// URL list only tests parameters already present, so a path-only surface
+	// reports nothing probed.
+	if opts.deep {
+		urls = append(urls, deepDiscover(ctx, c, urls, nil)...)
 	}
 
 	eng := attack.New(c, cfg.Destination(), opts.keyword, cfg.Concurrency, nil)
