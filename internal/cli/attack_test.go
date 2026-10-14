@@ -40,6 +40,32 @@ func TestAttackCommandJSONL(t *testing.T) {
 	assert.Contains(t, out.String(), `"severity"`, "every finding must carry a suggested severity")
 }
 
+// TestAttackCommandAcceptsDeep is the regression for the attack subcommand
+// rejecting --deep as an unknown flag: the pipeline had it but `detour attack`
+// did not, so attacking a saved surface could never brute-force hidden
+// parameters. The flag must be accepted and the run must still complete.
+func TestAttackCommandAcceptsDeep(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(lab.New().Handler())
+	t.Cleanup(srv.Close)
+
+	list := filepath.Join(t.TempDir(), "urls.txt")
+	require.NoError(t, os.WriteFile(list, []byte(srv.URL+"/a01?url=https://allowed.lab/\n"), 0o600))
+
+	cmd := cli.NewRoot()
+	out := new(bytes.Buffer)
+	errOut := new(bytes.Buffer)
+
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+	cmd.SetArgs(attackArgs("--deep", list))
+
+	require.NoError(t, cmd.Execute(), "attack must accept --deep, not reject it as an unknown flag")
+	assert.Contains(t, errOut.String(), "findings", "the run completes with --deep set")
+	assert.Contains(t, out.String(), `"technique_id"`)
+}
+
 func TestAttackCommandHAR(t *testing.T) {
 	t.Parallel()
 
