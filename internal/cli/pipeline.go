@@ -461,6 +461,12 @@ func surfaceOrigins(cmd *cobra.Command, cfg config.Config, domain string, flags 
 		return nil
 	}
 
+	if flags.skipSurface {
+		slog.Debug("skipping surface stage", "reason", "--skip-surface")
+
+		return nil
+	}
+
 	mapper, err := newMapper(cfg)
 	if err != nil {
 		slog.Warn("skipping surface stage", "reason", err)

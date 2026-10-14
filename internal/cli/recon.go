@@ -23,15 +23,16 @@ import (
 
 // reconFlags are shared by the recon commands and the end-to-end run.
 type reconFlags struct {
-	passive    bool
-	vendorOnly bool
-	deep       bool
-	crawl      bool
-	js         bool
-	escalate   bool
-	nuclei     bool
-	depth      int
-	outDir     string
+	passive     bool
+	skipSurface bool
+	vendorOnly  bool
+	deep        bool
+	crawl       bool
+	js          bool
+	escalate    bool
+	nuclei      bool
+	depth       int
+	outDir      string
 	// keyword, filter and resume belong to the attack stage. A pipeline run
 	// reaches that stage too, and offering them only on `detour attack` meant
 	// an interrupted full run could not be resumed at all.
@@ -45,6 +46,9 @@ func (r *reconFlags) register(cmd *cobra.Command) {
 	r.registerHarvest(cmd)
 
 	fs := cmd.Flags()
+	fs.BoolVar(&r.skipSurface, "skip-surface", false,
+		"skip subdomain enumeration; attack the named targets plus what harvest and crawl find "+
+			"(use when the surface stage is slow or a target has no subdomains worth enumerating)")
 	fs.BoolVar(&r.vendorOnly, "vendor-only", false, "keep only known ESP and martech click wrappers")
 	fs.BoolVar(&r.deep, "deep", false, "brute-force hidden redirect parameters on endpoints with no candidate")
 	fs.BoolVar(&r.js, "js", true, "read client-side code for navigation sinks (ignored under --passive)")
