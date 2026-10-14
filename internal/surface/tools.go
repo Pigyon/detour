@@ -89,23 +89,56 @@ func NewDNSResolver() (*DNSResolver, error) {
 // library is not needed just for a constant.
 const dnsTypeCNAME = 5
 
-// Resolve returns a host's addresses and its CNAME target.
-func (r *DNSResolver) Resolve(_ context.Context, host string) ([]string, string, error) {
-	data, err := r.client.QueryOne(host)
-	if err != nil {
-		return nil, "", fmt.Errorf("resolving %s: %w", host, err)
+// resolveTimeout bounds a single DNS lookup. The underlying QueryOne takes no
+// context and blocks in a syscall, so a name that never answers would
+// otherwise pin a worker forever and hang the whole surface stage (this is how
+// a run wedged at zero percent CPU with no per-lookup limit).
+const resolveTimeout = 10 * time.Second
+
+// Resolve returns a host's addresses and its CNAME target, bounded by
+// resolveTimeout so one unresponsive name cannot stall the stage. The lookup
+// runs in a goroutine and the result is taken or abandoned; an abandoned
+// goroutine ends on its own when the query finally returns or the process
+// exits.
+func (r *DNSResolver) Resolve(ctx context.Context, host string) ([]string, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, resolveTimeout)
+	defer cancel()
+
+	type answer struct {
+		ips   []string
+		cname string
+		err   error
 	}
 
-	if data == nil {
-		return nil, "", nil
-	}
+	ch := make(chan answer, 1)
 
-	cname := ""
-	if len(data.CNAME) > 0 {
-		cname = data.CNAME[0]
-	}
+	go func() {
+		data, err := r.client.QueryOne(host)
+		switch {
+		case err != nil:
+			ch <- answer{err: err}
+		case data == nil:
+			ch <- answer{}
+		default:
+			cname := ""
+			if len(data.CNAME) > 0 {
+				cname = data.CNAME[0]
+			}
 
-	return data.A, cname, nil
+			ch <- answer{ips: data.A, cname: cname}
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, "", fmt.Errorf("resolving %s: %w", host, ctx.Err())
+	case a := <-ch:
+		if a.err != nil {
+			return nil, "", fmt.Errorf("resolving %s: %w", host, a.err)
+		}
+
+		return a.ips, a.cname, nil
+	}
 }
 
 // HTTPProber probes a host over https then http, recording what answered.

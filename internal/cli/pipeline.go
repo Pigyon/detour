@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/nedlir/detour/internal/adapter"
 	"github.com/nedlir/detour/internal/attack"
@@ -30,6 +31,12 @@ import (
 const (
 	dirPerm  = 0o750
 	filePerm = 0o600
+
+	// surfaceStageTimeout bounds the whole surface stage (enumerate, resolve,
+	// probe) so a hung source cannot stall a run before it ever reaches the
+	// attack. Per-lookup limits live in the surface package; this is the
+	// aggregate backstop.
+	surfaceStageTimeout = 10 * time.Minute
 )
 
 // runPipeline is the end-to-end path: surface, harvest, select, attack, and
@@ -461,7 +468,12 @@ func surfaceOrigins(cmd *cobra.Command, cfg config.Config, domain string, flags 
 		return nil
 	}
 
-	result := mapper.Run(cmd.Context(), domain)
+	// The surface stage gets its own wall-clock bound so a hung enumeration or
+	// lookup cannot stall the whole run: --budget covers the attack, not this.
+	ctx, cancel := context.WithTimeout(cmd.Context(), surfaceStageTimeout)
+	defer cancel()
+
+	result := mapper.Run(ctx, domain)
 
 	if len(result.Priority()) > 0 {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
