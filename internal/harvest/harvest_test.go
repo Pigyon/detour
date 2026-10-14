@@ -46,11 +46,52 @@ func (r *recordedProvider) Fetch(context.Context, string) ([]string, error) {
 	return r.urls, r.err
 }
 
+// hangingProvider never answers until its context is cancelled, standing in
+// for an archive host that accepts the connection and then goes silent.
+type hangingProvider struct{ name string }
+
+func (h *hangingProvider) Name() string        { return h.name }
+func (h *hangingProvider) Rate() time.Duration { return 0 }
+
+func (h *hangingProvider) Fetch(ctx context.Context, _ string) ([]string, error) {
+	<-ctx.Done()
+
+	return nil, ctx.Err()
+}
+
 // urlOne is the archive fixture URL used across the provider cases.
 const (
 	urlOne        = "https://a.lab/one"
 	sourceWayback = "wayback"
 )
+
+// TestHarvestBoundsAHangingSource is the regression for the wedge: a source
+// that never answers must be cut by the per-source timeout so the harvest
+// returns instead of sitting forever, even with no run budget set.
+func TestHarvestBoundsAHangingSource(t *testing.T) {
+	t.Parallel()
+
+	hang := &hangingProvider{name: "slowarchive"}
+	good := &recordedProvider{name: sourceWayback, urls: []string{urlOne}}
+
+	h := harvest.New(&directDoer{}, harvest.Options{
+		Passive:       true,
+		Providers:     []harvest.Provider{hang, good},
+		SourceTimeout: 100 * time.Millisecond,
+	})
+
+	done := make(chan harvest.Result, 1)
+	go func() { done <- h.Run(context.Background(), "a.lab", "") }()
+
+	select {
+	case res := <-done:
+		assert.Contains(t, res.URLs, urlOne, "a healthy source is still collected")
+		require.NotEmpty(t, res.Errors, "the hung source is reported, not silently dropped")
+		assert.Contains(t, strings.Join(res.Errors, ";"), "slowarchive")
+	case <-time.After(5 * time.Second):
+		t.Fatal("harvest hung despite the per-source timeout")
+	}
+}
 
 func TestHarvestCollectsFromEveryProvider(t *testing.T) {
 	t.Parallel()

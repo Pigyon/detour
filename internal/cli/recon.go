@@ -125,13 +125,24 @@ func warnHarvest(cmd *cobra.Command, result harvest.Result) {
 		slog.Debug("harvest source failed", "reason", msg)
 	}
 
-	if len(result.URLs) > 0 || len(result.Errors) == 0 {
+	if len(result.URLs) > 0 {
 		return
 	}
 
-	_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
-		"harvest: every source failed (%d errors); run with --log-level debug for detail\n",
-		len(result.Errors))
+	// No URLs means no surface, so whatever the attack reports next is not a
+	// clean result, it is an untested one. Say so loudly rather than let a
+	// hollow "0 findings" read as "nothing here".
+	if len(result.Errors) > 0 {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+			"harvest: NO SURFACE: every source failed (%d errors); results below are untested, not clean; "+
+				"run with --log-level debug for detail\n",
+			len(result.Errors))
+
+		return
+	}
+
+	_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
+		"harvest: NO SURFACE: no urls discovered for this target; results below are untested, not clean")
 }
 
 // harvestFor runs the harvest stage for a target, which may be a bare domain

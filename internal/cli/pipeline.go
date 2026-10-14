@@ -73,6 +73,32 @@ func runPipelineTargets(cmd *cobra.Command, targets []string, flags *reconFlags,
 	return errors.Join(errs...)
 }
 
+// warnTargetScope says loudly when a target named on the command line is not
+// in the scope file. Its own pages are then refused as out of scope, so the
+// harvest finds nothing and the run reports a hollow "0 findings" that reads
+// as clean. The usual cause is a scope file with only a wildcard
+// (*.example.com), which matches subdomains but not the apex example.com.
+func warnTargetScope(cmd *cobra.Command, cfg config.Config, target string) {
+	if cfg.ScopeFile == "" {
+		return
+	}
+
+	guard, err := guardFromConfig(cfg)
+	if err != nil {
+		return
+	}
+
+	domain, _ := splitTarget(target)
+	if domain == "" || guard.Allows(domain) {
+		return
+	}
+
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+		"WARNING: target %s is not in --scope-file, so its own pages cannot be crawled and the run will find "+
+			"almost nothing; add %s explicitly (a wildcard *.%s matches subdomains, not the apex)\n",
+		domain, domain, domain)
+}
+
 // targetOutDir places each target's output under its own subdirectory of the
 // base --out so a multi-target sweep does not overwrite one report with the
 // next. An empty base (no --out) stays empty: nothing is written to disk.
@@ -106,6 +132,8 @@ func runPipeline(cmd *cobra.Command, target string, flags *reconFlags, headless 
 	if err != nil {
 		return err
 	}
+
+	warnTargetScope(cmd, cfg, target)
 
 	// Verified before recon, the expensive part: a run that must be
 	// authenticated should fail at once rather than surface, crawl, and attack
