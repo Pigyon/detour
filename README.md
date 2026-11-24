@@ -85,6 +85,15 @@ authenticated-only URL to notice when the session dies; with
 `--auth-check-required` a lost session stops the run instead of silently
 continuing as anonymous and under-reporting.
 
+**Untested is not clean.** A probe refused by a WAF or edge block page
+(Cloudflare, Akamai, AWS WAF, Imperva, F5, Sucuri, ModSecurity, Azure Front
+Door, or a 403/406 the endpoint's own baseline did not produce) is never
+recorded as a miss, so a resumed run tries it again. A source whose first
+answer is a login wall (a 401, or a redirect to a sign-in page that does not
+carry the source's own parameter) is not attacked anonymously; it is reported
+as needing a session, and `--attack-auth-walls` attacks it anyway. The run
+summary counts both, and `--out` writes them to `untested.json`.
+
 **Browser TLS impersonation.** A WAF like Akamai or Cloudflare fingerprints the
 TLS handshake, and Go's default handshake is an instant tell. `--tls-impersonate
 chrome` (or `firefox`) replays that browser's TLS ClientHello and the headers to
@@ -144,6 +153,7 @@ Global, available on every command:
 | `--auth-check` | | In-scope URL returning authenticated-only content. Probed to detect a lost session |
 | `--auth-check-expect` | | Substring that must appear in `--auth-check`'s response while authenticated |
 | `--auth-check-required` | `false` | Stop the run if the `--auth-check` probe shows the session is not authenticated |
+| `--attack-auth-walls` | `false` | Send payloads to URLs that answer with a login wall (401 or a redirect to sign-in) instead of reporting them as needing a session |
 | `--rate` | `5` | Per-host requests per second |
 | `--concurrency` | `10` | Max concurrent in-flight requests |
 | `--delay` | | Additional delay between per-host requests |

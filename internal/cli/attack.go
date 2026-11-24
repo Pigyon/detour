@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/nedlir/detour/internal/adapter"
@@ -131,6 +132,7 @@ func runAttack(cmd *cobra.Command, source string, opts attackOptions) error {
 	}
 
 	eng := attack.New(c, cfg.Destination(), opts.keyword, cfg.Concurrency, nil)
+	eng.SetAttackAuthWalls(cfg.AttackAuthWalls)
 
 	// A redirector that only accepts its own host is completed by another
 	// redirector on that host, and selection has already found which
@@ -155,7 +157,7 @@ func runAttack(cmd *cobra.Command, source string, opts attackOptions) error {
 	findings = maybeConfirm(cmd, cfg, findings, opts.headless, opts.outDir)
 	findings = maybeEscalate(findings, opts.escalate)
 
-	return writeAttackOutput(cmd, findings, allow, opts.outDir, eng.Coverage().OpaqueEnvelopes)
+	return writeAttackOutput(cmd, findings, allow, opts.outDir, eng.Coverage())
 }
 
 // runEngineWithBudgets runs the attack engine, honoring --budget-expand: each
@@ -290,10 +292,71 @@ func reportCoverage(cmd *cobra.Command, c attack.Coverage) {
 	for _, u := range c.OpaqueEnvelopes {
 		slog.Debug("opaque envelope found, no automatic bypass confirmed; see detour decode", "url", u)
 	}
+
+	reportUntested(cmd, c)
+}
+
+// reportUntested says what the run could not test. A blocked probe and a
+// walled source both come back with no finding, and without this line they
+// read exactly like a clean target.
+func reportUntested(cmd *cobra.Command, c attack.Coverage) {
+	if c.Blocked > 0 {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+			"untested: %d probes refused by a waf or edge (%s); they are not clean, re-test them by hand or from another vantage point\n",
+			c.Blocked, vendorTally(c.BlockedBy))
+	}
+
+	if len(c.AuthWalls) > 0 {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+			"needs auth: %d urls answered with a login wall, payloads skipped; re-run them with a session "+
+				"(--cookie, --cookies-file, --header) or pass --attack-auth-walls\n",
+			len(c.AuthWalls))
+	}
+
+	for _, p := range c.BlockedProbes {
+		slog.Debug("probe blocked", "url", p.URL, "status", p.Status, "vendor", p.Vendor)
+	}
+
+	for _, w := range c.AuthWalls {
+		slog.Debug("login wall", "url", w.URL, "status", w.Status, "reason", w.Reason, "location", w.Location)
+	}
+}
+
+// vendorTally renders a per-vendor count in a stable order, most first.
+func vendorTally(by map[string]int) string {
+	names := make([]string, 0, len(by))
+	for name := range by {
+		names = append(names, name)
+	}
+
+	sort.Slice(names, func(i, j int) bool {
+		if by[names[i]] != by[names[j]] {
+			return by[names[i]] > by[names[j]]
+		}
+
+		return names[i] < names[j]
+	})
+
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, fmt.Sprintf("%s %d", name, by[name]))
+	}
+
+	return strings.Join(parts, ", ")
+}
+
+// untestedFrom is the part of a run's coverage untested.json records.
+func untestedFrom(c attack.Coverage) report.Untested {
+	return report.Untested{
+		Blocked:       c.Blocked,
+		BlockedBy:     c.BlockedBy,
+		BlockedProbes: c.BlockedProbes,
+		AuthWalls:     c.AuthWalls,
+	}
 }
 
 func writeAttackOutput(
-	cmd *cobra.Command, findings []model.Finding, allow map[string]struct{}, outDir string, opaqueEnvelopes []string,
+	cmd *cobra.Command, findings []model.Finding, allow map[string]struct{}, outDir string, cov attack.Coverage,
 ) error {
 	findings = report.Apply(findings, allow)
 	findings = suggestSeverities(findings)
@@ -322,7 +385,11 @@ func writeAttackOutput(
 
 	reportDiff(cmd, diff)
 
-	return report.WriteOpaqueEnvelopes(outDir, opaqueEnvelopes)
+	if err := report.WriteOpaqueEnvelopes(outDir, cov.OpaqueEnvelopes); err != nil {
+		return err
+	}
+
+	return report.WriteUntested(outDir, untestedFrom(cov))
 }
 
 // reportDiff says what changed since a previous run into the same --out,
