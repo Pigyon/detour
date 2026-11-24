@@ -167,7 +167,7 @@ func runPipeline(cmd *cobra.Command, target string, flags *reconFlags, headless 
 	// flag a lie, which matters most to the operator who set it because their
 	// testing window had closed.
 	if flags.passive {
-		return writeAttackOutput(cmd, passiveFindings(cmd, urls, flags), allow, flags.outDir, nil)
+		return writeAttackOutput(cmd, passiveFindings(cmd, urls, flags), allow, flags.outDir, attack.Coverage{})
 	}
 
 	// The js stage runs first. It is the only stage that can read what a
@@ -177,6 +177,7 @@ func runPipeline(cmd *cobra.Command, target string, flags *reconFlags, headless 
 
 	eng := attack.New(c, cfg.Destination(), flags.keyword, cfg.Concurrency, nil)
 	eng.SetTrustedHosts(allowed)
+	eng.SetAttackAuthWalls(cfg.AttackAuthWalls)
 
 	// A full pipeline run defaults to resumable rather than requiring the
 	// operator to know, before a run that might need interrupting, that they
@@ -216,7 +217,7 @@ func runPipeline(cmd *cobra.Command, target string, flags *reconFlags, headless 
 	findings = maybeConfirm(cmd, cfg, findings, headless, flags.outDir)
 	findings = maybeEscalate(findings, flags.escalate)
 
-	return writeAttackOutput(cmd, findings, allow, flags.outDir, eng.Coverage().OpaqueEnvelopes)
+	return writeAttackOutput(cmd, findings, allow, flags.outDir, eng.Coverage())
 }
 
 // passiveFindings reports what a run can know without sending the target a

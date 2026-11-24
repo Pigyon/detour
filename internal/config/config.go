@@ -93,6 +93,11 @@ type Config struct {
 	// AuthCheckRequired stops the run when the AuthCheck probe shows the
 	// session is not authenticated, rather than only warning.
 	AuthCheckRequired bool `mapstructure:"auth-check-required"`
+	// AttackAuthWalls sends payloads to sources that answer with a login wall
+	// (a 401, or a redirect to a sign-in page). Off by default: anonymous
+	// payloads behind a wall only collect misses that mean nothing, so such
+	// sources are reported as needing a session instead.
+	AttackAuthWalls bool `mapstructure:"attack-auth-walls"`
 }
 
 // NewViper returns an isolated viper with defaults, env prefix, and key replacer.
@@ -118,6 +123,7 @@ func SetDefaults(v *viper.Viper) {
 	v.SetDefault("budget", time.Duration(0))
 	v.SetDefault("session-refresh", time.Duration(0))
 	v.SetDefault("auth-check-required", false)
+	v.SetDefault("attack-auth-walls", false)
 }
 
 // LoadFile reads an optional YAML config. A missing file is not an error.

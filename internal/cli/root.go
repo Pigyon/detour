@@ -156,6 +156,8 @@ func registerPersistentFlags(root *cobra.Command) {
 		"substring that must appear in --auth-check's response while authenticated")
 	fs.Bool("auth-check-required", false,
 		"stop the run if the --auth-check probe shows the session is not authenticated")
+	fs.Bool("attack-auth-walls", false,
+		"send payloads to urls that answer with a login wall (401 or a redirect to sign-in) instead of reporting them as needing a session")
 }
 
 func bindFlags(v *viper.Viper, cmd *cobra.Command) error {

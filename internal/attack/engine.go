@@ -166,33 +166,65 @@ func targetParamsOn(query url.Values, redirector bool) []string {
 // sending the request again.
 const baselineKey = "baseline"
 
+// baselineResult is what one plain request to a source decides before any
+// payload is spent on it.
+type baselineResult struct {
+	// reachable is false when the source did not answer at all.
+	reachable bool
+	// redirector is true when the source already answers with a destination.
+	redirector bool
+	// untested is true when the answer was a block page or a login wall: the
+	// source answered, but not as the application, so its payloads would
+	// only collect misses that mean nothing.
+	untested bool
+}
+
 // baseline sends the source URL once and reports whether the endpoint answers
-// with a destination, and whether it answered at all.
-func (e *Engine) baseline(ctx context.Context, raw string) (redirector, reachable bool) {
+// with a destination, whether it answered at all, and whether what answered
+// was the application.
+//
+// A source that is blocked or walled is not recorded in the checkpoint: a
+// later run, from another vantage point or with a session, should look again.
+func (e *Engine) baseline(ctx context.Context, raw string) baselineResult {
 	if e.checkpoint != nil && e.checkpoint.Seen(raw, baselineKey, baselineKey) {
 		_, was := e.checkpoint.Recover(raw, baselineKey, baselineKey)
 
-		return was, true
+		return baselineResult{reachable: true, redirector: was}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
-		return false, false
+		return baselineResult{}
 	}
 
 	resp, err := e.client.Do(ctx, req)
 	if err != nil {
-		return false, false
+		return baselineResult{}
 	}
 
 	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyScan))
-	redirector = len(destValues(resp, body)) > 0
+	e.baselineStatus.Store(endpointKey(raw), resp.StatusCode)
+	e.baselineStatus.Store(hostKey(raw), resp.StatusCode)
+
+	if vendor, blocked := blockVendor(resp, body); blocked {
+		e.noteBlocked(raw, resp.StatusCode, vendor)
+
+		return baselineResult{reachable: true, untested: true}
+	}
+
+	if wall, walled := authWall(raw, resp); walled && !e.attackAuthWalls {
+		e.noteAuthWall(wall)
+
+		return baselineResult{reachable: true, untested: true}
+	}
+
+	redirector := len(destValues(resp, body)) > 0
 
 	e.recordBaseline(raw, redirector)
 
-	return redirector, true
+	return baselineResult{reachable: true, redirector: redirector}
 }
 
 // recordBaseline stores the redirector verdict so a resume can read it back.
@@ -297,6 +329,17 @@ type Coverage struct {
 	// parameters on before anything else in the harvest. A bare count threw
 	// that away the moment the run finished.
 	RedirectorURLs []string
+	// Blocked counts probes a WAF or edge refused, and BlockedBy tallies them
+	// by the vendor detour recognized. They are untested, not clean: a run
+	// whose every payload was refused used to report exactly what a clean
+	// target reports.
+	Blocked   int
+	BlockedBy map[string]int
+	// BlockedProbes lists refused probes by URL, up to maxBlockedProbes.
+	BlockedProbes []model.BlockedProbe
+	// AuthWalls lists sources that answered with a login wall, so their
+	// payloads were not sent. Re-running them with a session tests them.
+	AuthWalls []model.AuthWall
 	// OpaqueEnvelopes names sources where a blob was found but none of the
 	// standard bypass strategies confirmed a destination inside it.
 	//
@@ -320,6 +363,17 @@ type Engine struct {
 	checkpoint   *checkpoint.Store
 	chainTargets []ChainTarget
 	trustedHosts []string
+	// baselineStatus holds each source endpoint's plain-request status, so a
+	// refusal can be told apart from an endpoint that refuses everyone.
+	baselineStatus sync.Map
+	// attackAuthWalls sends payloads to login-walled sources anyway.
+	attackAuthWalls bool
+}
+
+// SetAttackAuthWalls makes the engine attack sources that answer with a login
+// wall instead of reporting them as needing a session.
+func (e *Engine) SetAttackAuthWalls(on bool) {
+	e.attackAuthWalls = on
 }
 
 // SetTrustedHosts supplies hosts a validator is known to allow, as read out of
@@ -376,6 +430,61 @@ func (e *Engine) noteCoverage(reachable, redirector bool, params int, source str
 	}
 
 	e.coverage.Params += params
+}
+
+func (e *Engine) noteBlocked(raw string, status int, vendor string) {
+	e.coverageMu.Lock()
+	defer e.coverageMu.Unlock()
+
+	e.coverage.Blocked++
+
+	if e.coverage.BlockedBy == nil {
+		e.coverage.BlockedBy = map[string]int{}
+	}
+
+	e.coverage.BlockedBy[vendor]++
+
+	if len(e.coverage.BlockedProbes) < maxBlockedProbes {
+		e.coverage.BlockedProbes = append(e.coverage.BlockedProbes,
+			model.BlockedProbe{URL: raw, Status: status, Vendor: vendor})
+	}
+}
+
+func (e *Engine) noteAuthWall(wall model.AuthWall) {
+	e.coverageMu.Lock()
+	defer e.coverageMu.Unlock()
+
+	e.coverage.AuthWalls = append(e.coverage.AuthWalls, wall)
+}
+
+// refusedBy reports whether a probe's answer is a refusal rather than the
+// application's verdict, and whose.
+//
+// A recognized block page always is. A bare 403 is only when the source's own
+// baseline was not already a 403: an endpoint that forbids everyone has
+// answered, and its payloads really are misses. A path payload reaches an
+// endpoint no baseline was sent to, so it is judged by its host's baseline.
+func (e *Engine) refusedBy(raw string, resp *http.Response, body []byte) (string, bool) {
+	if vendor, ok := blockVendor(resp, body); ok {
+		return vendor, true
+	}
+
+	if resp.StatusCode != http.StatusForbidden {
+		return "", false
+	}
+
+	was, ok := e.baselineStatus.Load(endpointKey(raw))
+	if !ok {
+		was, ok = e.baselineStatus.Load(hostKey(raw))
+	}
+
+	if ok {
+		if status, isInt := was.(int); isInt && status == http.StatusForbidden {
+			return "", false
+		}
+	}
+
+	return "unknown", true
 }
 
 func (e *Engine) noteOpaqueEnvelope(source string) {
@@ -520,13 +629,25 @@ func (e *Engine) attackOne(ctx context.Context, raw string) ([]model.Finding, er
 	// attacking. The one carrying the destination need not have a recognizable
 	// name or a url-shaped value: "?q=/" on a redirector is the case a name
 	// list and a value test both miss.
-	redirector, reachable := e.baseline(ctx, raw)
-	if !reachable {
+	base := e.baseline(ctx, raw)
+	if !base.reachable {
 		slog.Debug("source did not answer, skipping its payloads", "url", raw)
 		e.noteCoverage(false, false, 0, raw)
 
 		return nil, nil
 	}
+
+	// A block page or a login wall answered instead of the application.
+	// Every payload sent past it would come back a miss, and a miss is
+	// written down as clean, so the source is reported untested instead.
+	if base.untested {
+		slog.Debug("source answered with a block page or login wall, skipping its payloads", "url", raw)
+		e.noteCoverage(true, false, 0, raw)
+
+		return nil, nil
+	}
+
+	redirector := base.redirector
 
 	e.noteCoverage(true, redirector, len(targetParamsOn(parsed.Query(), redirector)), raw)
 
@@ -843,11 +964,11 @@ func (e *Engine) confirm(ctx context.Context, pr probe) (model.Finding, bool, er
 	return f, true, nil
 }
 
-// skipUnanswered turns an unanswered probe into no verdict at all, and leaves
-// every other error alone. The attempt is not recorded, so a later run makes
+// skipUnanswered turns an unanswered or blocked probe into no verdict at all,
+// and leaves every other error alone. The attempt is not recorded, so a later run makes
 // it again.
 func skipUnanswered(err error) error {
-	if errors.Is(err, errUnanswered) {
+	if errors.Is(err, errUnanswered) || errors.Is(err, errBlocked) {
 		return nil
 	}
 
@@ -945,6 +1066,14 @@ func (e *Engine) readDest(ctx context.Context, raw string, extra http.Header, ca
 
 	if pair, found, ok := pickCanaryDest(raw, destValues(resp, body), canary); ok {
 		return pair, found, resp.StatusCode, nil
+	}
+
+	// A refusal is not the endpoint keeping the browser home. Recording it as
+	// a miss made a blocked payload a permanent "not vulnerable".
+	if vendor, refused := e.refusedBy(raw, resp, body); refused {
+		e.noteBlocked(raw, resp.StatusCode, vendor)
+
+		return resolve.Pair{}, dest{}, resp.StatusCode, errBlocked
 	}
 
 	// A body that did not finish arriving cannot prove a destination is
